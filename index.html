@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ClickGuide — Build interactive walkthroughs</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand" data-action="go-home">
+      <span class="brand-mark"></span>
+      <span class="brand-name">ClickGuide</span>
+    </div>
+    <nav class="app-nav">
+      <button class="btn btn-ghost" data-action="go-home">My guides</button>
+      <button class="btn btn-ghost" data-action="import-guide">Import</button>
+      <button class="btn btn-primary" data-action="new-guide">New guide</button>
+    </nav>
+  </header>
+
+  <main id="view-root"></main>
+
+  <input type="file" id="screenshot-input" accept="image/*" hidden />
+  <input type="file" id="import-input" accept="application/json" hidden />
+
+  <template id="tpl-home">
+    <section class="home">
+      <div class="home-hero">
+        <h1>Capture once. Teach forever.</h1>
+        <p>Build click-by-click walkthroughs of any application. Add screenshots, mark hotspots, write instructions, and share an interactive guide your team can actually follow.</p>
+        <div class="home-cta">
+          <button class="btn btn-primary btn-lg" data-action="new-guide">Create a new guide</button>
+          <button class="btn btn-ghost btn-lg" data-action="import-guide">Import JSON</button>
+        </div>
+      </div>
+      <div class="home-list">
+        <h2>Your guides</h2>
+        <div id="guide-list" class="guide-grid"></div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-editor">
+    <section class="editor">
+      <aside class="editor-side">
+        <div class="editor-meta">
+          <input class="title-input" data-bind="title" placeholder="Untitled guide" />
+          <textarea class="desc-input" data-bind="description" placeholder="Describe what this guide teaches..."></textarea>
+        </div>
+        <div class="step-list-header">
+          <h3>Steps</h3>
+          <button class="btn btn-ghost btn-sm" data-action="add-step">+ Add step</button>
+        </div>
+        <ol class="step-list" id="step-list"></ol>
+        <div class="editor-actions">
+          <button class="btn btn-ghost btn-sm" data-action="export-guide">Export</button>
+          <button class="btn btn-ghost btn-sm" data-action="play-guide">Preview</button>
+          <button class="btn btn-danger btn-sm" data-action="delete-guide">Delete</button>
+        </div>
+      </aside>
+      <section class="editor-main" id="editor-main"></section>
+    </section>
+  </template>
+
+  <template id="tpl-step-empty">
+    <div class="step-empty">
+      <div class="empty-icon"></div>
+      <h2>Add a screenshot to begin</h2>
+      <p>Drop an image here or click to upload. Then click anywhere on the screenshot to drop a hotspot for this step.</p>
+      <button class="btn btn-primary" data-action="upload-screenshot">Upload screenshot</button>
+    </div>
+  </template>
+
+  <template id="tpl-step-editor">
+    <div class="step-editor">
+      <div class="step-toolbar">
+        <input class="step-title" data-bind="step-title" placeholder="Step title" />
+        <div class="step-toolbar-actions">
+          <button class="btn btn-ghost btn-sm" data-action="replace-screenshot">Replace image</button>
+          <button class="btn btn-ghost btn-sm" data-action="clear-hotspot">Clear hotspot</button>
+        </div>
+      </div>
+      <div class="canvas-wrap">
+        <div class="canvas" id="canvas">
+          <img class="canvas-img" id="canvas-img" alt="" />
+          <div class="hotspot" id="hotspot" hidden>
+            <span class="hotspot-pulse"></span>
+            <span class="hotspot-dot"></span>
+          </div>
+        </div>
+        <p class="canvas-hint">Click the screenshot to place or move the hotspot.</p>
+      </div>
+      <textarea class="step-instruction" data-bind="step-instruction" placeholder="Tell the learner what to do at this step..."></textarea>
+    </div>
+  </template>
+
+  <template id="tpl-player">
+    <section class="player">
+      <div class="player-header">
+        <div>
+          <h2 id="player-title"></h2>
+          <p id="player-progress" class="player-progress"></p>
+        </div>
+        <div class="player-actions">
+          <button class="btn btn-ghost" data-action="exit-player">Exit</button>
+        </div>
+      </div>
+      <div class="player-stage" id="player-stage"></div>
+      <div class="player-controls">
+        <button class="btn btn-ghost" data-action="player-prev">&larr; Previous</button>
+        <div class="player-dots" id="player-dots"></div>
+        <button class="btn btn-primary" data-action="player-next">Next &rarr;</button>
+      </div>
+    </section>
+  </template>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
