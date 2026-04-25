@@ -50,12 +50,20 @@
         </div>
         <div class="step-list-header">
           <h3>Steps</h3>
-          <button class="btn btn-ghost btn-sm" data-action="add-step">+ Add step</button>
+          <div class="step-list-header-actions">
+            <button class="btn btn-ghost btn-sm" data-action="start-capture" title="Record steps from your screen">&#9679; Capture</button>
+            <button class="btn btn-ghost btn-sm" data-action="add-step">+ Add</button>
+          </div>
         </div>
         <ol class="step-list" id="step-list"></ol>
         <div class="editor-actions">
-          <button class="btn btn-ghost btn-sm" data-action="export-guide">Export</button>
           <button class="btn btn-ghost btn-sm" data-action="play-guide">Preview</button>
+          <div class="export-group">
+            <span class="export-label">Export</span>
+            <button class="btn btn-ghost btn-sm" data-action="export-pdf">PDF</button>
+            <button class="btn btn-ghost btn-sm" data-action="export-word">Word</button>
+            <button class="btn btn-ghost btn-sm" data-action="export-guide">JSON</button>
+          </div>
           <button class="btn btn-danger btn-sm" data-action="delete-guide">Delete</button>
         </div>
       </aside>

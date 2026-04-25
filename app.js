@@ -504,6 +504,345 @@
     const d = new Date(ts);
     return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
   }
+  function escapeHtml(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
+  }
+  function safeFilename(s) {
+    return (s || "guide").replace(/[^a-z0-9_-]+/gi, "-").toLowerCase().slice(0, 60) || "guide";
+  }
+  function loadImage(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("Image load failed"));
+      img.src = src;
+    });
+  }
+
+  // ---------- Document export (PDF + Word) ----------
+  // Burn the hotspot directly onto a copy of the screenshot so it survives in
+  // any output format (print, .doc, etc.) without needing absolute positioning.
+  async function composeStepImage(step) {
+    if (!step.image) return null;
+    const img = await loadImage(step.image);
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0);
+    if (step.hotspot) {
+      const x = step.hotspot.x * canvas.width;
+      const y = step.hotspot.y * canvas.height;
+      const r = Math.max(10, Math.min(canvas.width, canvas.height) * 0.018);
+      ctx.fillStyle = "rgba(79, 140, 255, 0.20)";
+      ctx.beginPath();
+      ctx.arc(x, y, r * 2.6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(79, 140, 255, 0.95)";
+      ctx.lineWidth = Math.max(2, r * 0.35);
+      ctx.beginPath();
+      ctx.arc(x, y, r * 1.8, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#4f8cff";
+      ctx.beginPath();
+      ctx.arc(x, y, r * 0.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    return canvas.toDataURL("image/png");
+  }
+
+  async function buildGuideHtml(guide) {
+    const composed = await Promise.all(guide.steps.map(composeStepImage));
+    const stepsHtml = guide.steps.map((s, i) => {
+      const num = String(i + 1).padStart(2, "0");
+      const title = escapeHtml(s.title || `Step ${i + 1}`);
+      const instr = s.instruction ? `<p class="instr">${escapeHtml(s.instruction)}</p>` : "";
+      const imgTag = composed[i]
+        ? `<img src="${composed[i]}" alt="" />`
+        : `<div class="no-img">No screenshot</div>`;
+      return `
+        <section class="step">
+          <h2><span class="num">${num}</span>${title}</h2>
+          ${imgTag}
+          ${instr}
+        </section>`;
+    }).join("");
+
+    const css = `
+      body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+             color: #1a1a1a; margin: 32px; line-height: 1.5; }
+      h1 { font-size: 26px; margin: 0 0 4px; }
+      .desc { color: #555; margin: 0 0 28px; font-size: 14px; }
+      .meta { color: #888; font-size: 12px; margin-bottom: 24px; }
+      .step { margin: 0 0 28px; page-break-inside: avoid; }
+      .step h2 { font-size: 16px; margin: 0 0 10px; }
+      .num { display: inline-block; min-width: 28px; color: #4f8cff;
+             font-weight: 700; margin-right: 8px; }
+      .step img { display: block; max-width: 100%; height: auto;
+                  border: 1px solid #ddd; border-radius: 4px; }
+      .no-img { padding: 40px; background: #f4f5f7; color: #888;
+                text-align: center; border-radius: 4px; }
+      .instr { margin: 12px 0 0; white-space: pre-wrap; }
+      @page { margin: 18mm; }
+      @media print {
+        body { margin: 0; }
+        .step { page-break-after: always; }
+        .step:last-child { page-break-after: auto; }
+      }`;
+
+    return `<!doctype html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office"
+      xmlns:w="urn:schemas-microsoft-com:office:word"
+      xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta charset="utf-8" />
+<title>${escapeHtml(guide.title || "Guide")}</title>
+<style>${css}</style>
+</head>
+<body>
+<h1>${escapeHtml(guide.title || "Untitled guide")}</h1>
+${guide.description ? `<p class="desc">${escapeHtml(guide.description)}</p>` : ""}
+<p class="meta">${guide.steps.length} step${guide.steps.length === 1 ? "" : "s"} &middot; ${escapeHtml(formatDate(guide.updatedAt))}</p>
+${stepsHtml}
+</body>
+</html>`;
+  }
+
+  async function exportPdf() {
+    const guide = getGuide(state.activeGuideId);
+    if (!guide) return;
+    toast("Preparing PDF...");
+    try {
+      const html = await buildGuideHtml(guide);
+      const iframe = document.createElement("iframe");
+      iframe.setAttribute("aria-hidden", "true");
+      iframe.style.cssText =
+        "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;";
+      document.body.appendChild(iframe);
+      let printed = false;
+      const doPrint = () => {
+        if (printed) return;
+        printed = true;
+        try {
+          iframe.contentWindow.focus();
+          iframe.contentWindow.print();
+        } catch (e) {
+          console.error(e);
+          toast("PDF print failed. Try the Word export instead.");
+        }
+        setTimeout(() => iframe.remove(), 1500);
+      };
+      iframe.onload = () => {
+        const imgs = Array.from(iframe.contentDocument.images);
+        let remaining = imgs.filter((i) => !i.complete).length;
+        if (remaining === 0) return doPrint();
+        const done = () => { if (--remaining <= 0) doPrint(); };
+        imgs.forEach((i) => {
+          if (i.complete) return;
+          i.addEventListener("load", done, { once: true });
+          i.addEventListener("error", done, { once: true });
+        });
+        setTimeout(doPrint, 4000); // safety fallback
+      };
+      const doc = iframe.contentDocument;
+      doc.open();
+      doc.write(html);
+      doc.close();
+    } catch (e) {
+      console.error(e);
+      toast("Couldn't build PDF: " + e.message);
+    }
+  }
+
+  async function exportWord() {
+    const guide = getGuide(state.activeGuideId);
+    if (!guide) return;
+    toast("Preparing Word document...");
+    try {
+      const html = await buildGuideHtml(guide);
+      const blob = new Blob(["﻿", html], { type: "application/msword" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${safeFilename(guide.title)}.doc`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast("Word document downloaded.");
+    } catch (e) {
+      console.error(e);
+      toast("Couldn't build Word document: " + e.message);
+    }
+  }
+
+  // ---------- Capture mode (screen recording -> step screenshots) ----------
+  const capture = {
+    stream: null,
+    video: null,
+    panel: null,
+    guideId: null,
+    count: 0,
+  };
+
+  async function startCapture(guide) {
+    if (capture.stream) return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+      toast("Capture mode needs a browser with screen-sharing support.");
+      return;
+    }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { cursor: "always", frameRate: 15 },
+        audio: false,
+      });
+    } catch (e) {
+      if (e.name !== "NotAllowedError") {
+        toast("Couldn't start capture: " + e.message);
+      }
+      return;
+    }
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.srcObject = stream;
+    try {
+      await video.play();
+    } catch (e) {
+      stream.getTracks().forEach((t) => t.stop());
+      toast("Couldn't start preview: " + e.message);
+      return;
+    }
+    capture.stream = stream;
+    capture.video = video;
+    capture.guideId = guide.id;
+    capture.count = 0;
+    stream.getVideoTracks()[0].addEventListener("ended", stopCapture);
+    showCapturePanel();
+    document.addEventListener("keydown", captureHotkey, true);
+    toast("Capture started. Press F9 or click Capture to grab a step.");
+  }
+
+  function stopCapture() {
+    if (!capture.stream) return;
+    capture.stream.getTracks().forEach((t) => t.stop());
+    capture.stream = null;
+    capture.video = null;
+    document.removeEventListener("keydown", captureHotkey, true);
+    if (capture.panel) {
+      capture.panel.remove();
+      capture.panel = null;
+    }
+    const id = capture.guideId;
+    capture.guideId = null;
+    capture.count = 0;
+    if (id) openEditor(id);
+  }
+
+  function captureFrame() {
+    if (!capture.video) return;
+    const w = capture.video.videoWidth;
+    const h = capture.video.videoHeight;
+    if (!w || !h) {
+      toast("Stream not ready yet.");
+      return;
+    }
+    const guide = getGuide(capture.guideId);
+    if (!guide) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext("2d").drawImage(capture.video, 0, 0);
+    const dataUrl = canvas.toDataURL("image/png");
+    let step;
+    const last = guide.steps[guide.steps.length - 1];
+    if (
+      guide.steps.length === 1 &&
+      !last.image &&
+      !last.title &&
+      !last.instruction
+    ) {
+      step = last;
+    } else {
+      step = createStep();
+      guide.steps.push(step);
+    }
+    step.image = dataUrl;
+    step.hotspot = null;
+    capture.count++;
+    touchGuide(guide);
+    flashCapturePanel();
+    updateCapturePanelCount();
+  }
+
+  function captureHotkey(e) {
+    if (e.key === "F9") {
+      e.preventDefault();
+      captureFrame();
+    } else if (e.key === "Escape" && e.shiftKey) {
+      e.preventDefault();
+      stopCapture();
+    }
+  }
+
+  function showCapturePanel() {
+    const panel = document.createElement("div");
+    panel.className = "capture-panel";
+    panel.innerHTML = `
+      <div class="capture-dot"></div>
+      <div class="capture-text">
+        <strong>Capture mode</strong>
+        <span class="capture-count">0 steps captured</span>
+      </div>
+      <button class="btn btn-primary btn-sm" data-cap="grab">Capture (F9)</button>
+      <button class="btn btn-ghost btn-sm" data-cap="stop">Stop</button>
+    `;
+    panel.querySelector('[data-cap="grab"]').addEventListener("click", captureFrame);
+    panel.querySelector('[data-cap="stop"]').addEventListener("click", stopCapture);
+    makeDraggable(panel);
+    document.body.appendChild(panel);
+    capture.panel = panel;
+  }
+
+  function updateCapturePanelCount() {
+    if (!capture.panel) return;
+    const el = capture.panel.querySelector(".capture-count");
+    if (el) el.textContent = `${capture.count} step${capture.count === 1 ? "" : "s"} captured`;
+  }
+
+  function flashCapturePanel() {
+    if (!capture.panel) return;
+    capture.panel.classList.add("flash");
+    setTimeout(() => capture.panel && capture.panel.classList.remove("flash"), 250);
+  }
+
+  function makeDraggable(el) {
+    let dragging = false;
+    let startX = 0, startY = 0, originX = 0, originY = 0;
+    el.addEventListener("mousedown", (e) => {
+      if (e.target.closest("button")) return;
+      dragging = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      const rect = el.getBoundingClientRect();
+      originX = rect.left;
+      originY = rect.top;
+      el.style.right = "auto";
+      el.style.bottom = "auto";
+      e.preventDefault();
+    });
+    document.addEventListener("mousemove", (e) => {
+      if (!dragging) return;
+      el.style.left = `${originX + (e.clientX - startX)}px`;
+      el.style.top = `${originY + (e.clientY - startY)}px`;
+    });
+    document.addEventListener("mouseup", () => { dragging = false; });
+  }
 
   // ---------- Global event wiring ----------
   document.addEventListener("click", (e) => {
@@ -530,6 +869,9 @@
         }
         break;
       case "export-guide": exportGuide(); break;
+      case "export-pdf": exportPdf(); break;
+      case "export-word": exportWord(); break;
+      case "start-capture": if (guide) startCapture(guide); break;
       case "play-guide":
         if (guide) {
           state.view = "player";
