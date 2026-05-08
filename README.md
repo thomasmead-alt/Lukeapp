@@ -77,13 +77,28 @@ T-003,Reset password email,User exists,Email arrives within 1 min,Med
 
 ## Capture mode
 
-Click **Capture** in the editor sidebar (or in a test run). The browser asks which window, tab, or screen you want to share — pick the application you're documenting. A small floating panel appears with a red recording dot and a step counter.
+The default capture flow is **paste-to-capture** — you take screenshots with your OS's native tool and paste them in. No browser permission prompt, no extension, works on `file://` and in private/incognito mode, and gives full PNG quality at exactly the region you want.
 
+1. Click **Capture** in the editor sidebar (or inside a test run).
+2. A floating panel appears: "Take a screenshot, then Ctrl+V."
+3. Use your OS screenshot tool:
+   - **Windows**: `Win + Shift + S` (region), then it lands on the clipboard
+   - **macOS**: `Cmd + Shift + Ctrl + 4` (region to clipboard) or `Cmd + Shift + 4` (saves a file — drag-drop instead)
+   - **Linux** (GNOME): `Shift + PrintScreen`, then `Ctrl + C` from the screenshot tool
+4. **Ctrl + V** (or **⌘V**) anywhere in ClickGuide. The image becomes the next step.
+5. Repeat as needed. Click **Stop** or press **Esc** to finish.
+
+Each pasted screenshot is automatically downsized to 1600px max and re-encoded as JPEG quality 0.85, so localStorage usage stays low.
+
+### Screen recording fallback
+
+If you'd rather have ClickGuide grab frames from a live screen share, click **Screen recording** on the paste panel. That switches to the [Screen Capture API](https://developer.mozilla.org/en-US/docs/Web/API/Screen_Capture_API) flow:
+
+- Pick a window, tab, or screen to share
 - Click **Capture (F9)** or press **F9** to grab the current frame as a new step
-- Drag the panel out of the way if it overlaps your target app
-- Click **Stop** (or **Shift+Esc**) to end the session and return to the editor, where you can drop hotspots and write instructions
+- **Shift+Esc** stops
 
-Capture mode uses the browser's [Screen Capture API](https://developer.mozilla.org/en-US/docs/Web/API/Screen_Capture_API) — no extension or backend required. It works in current Chrome, Edge, Firefox, and Safari (macOS 13+).
+Screen recording works in current Chrome, Edge, Firefox, and Safari (macOS 13+), but requires an HTTPS or `localhost` origin and a permission prompt each session.
 
 ## Export formats
 

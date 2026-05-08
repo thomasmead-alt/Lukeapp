@@ -634,6 +634,8 @@
   }
 
   function goHome() {
+    if (pasteCapture.active) stopPasteCapture(false);
+    if (capture.stream) stopCapture(false);
     state.view = "home";
     state.activeGuideId = null;
     state.activeStepId = null;
@@ -1657,7 +1659,7 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
     });
   }
 
-  function stopCapture() {
+  function stopCapture(navigate = true) {
     if (!capture.stream) return;
     capture.stream.getTracks().forEach((t) => t.stop());
     capture.stream = null;
@@ -1673,6 +1675,7 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
     capture.context = null;
     capture.resolveTarget = null;
     capture.count = 0;
+    if (!navigate) return;
     if (kind === "guide" && ctx?.guideId) {
       openEditor(ctx.guideId);
     } else if (kind === "run" && ctx?.planId) {
@@ -2092,6 +2095,213 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
     renderRunSteps(plan, test, run);
   }
 
+  // ---------- Paste-to-capture (default capture mode) ----------
+  // Listens for clipboard paste events globally while active. Each pasted
+  // image becomes a new step. Non-image pastes (text into a textarea, etc.)
+  // pass through normally. Works on file:// origins, in private mode, and
+  // without any browser permission prompt.
+  const pasteCapture = {
+    active: false,
+    contextKind: null,    // "guide" | "run"
+    context: null,
+    resolveTarget: null,
+    panel: null,
+    trap: null,
+    count: 0,
+  };
+
+  function startPasteCapture(contextKind, context, resolveTarget) {
+    if (pasteCapture.active) return;
+    if (capture.stream) stopCapture(false);
+    pasteCapture.active = true;
+    pasteCapture.contextKind = contextKind;
+    pasteCapture.context = context;
+    pasteCapture.resolveTarget = resolveTarget;
+    pasteCapture.count = 0;
+    document.addEventListener("paste", handlePasteEvent, true);
+    document.addEventListener("keydown", pasteCaptureHotkey, true);
+    showPastePanel();
+    // Focus a hidden contenteditable so Ctrl+V always fires a paste event
+    // (some browsers won't fire it without a focused editable target).
+    const trap = document.createElement("div");
+    trap.contentEditable = "true";
+    trap.setAttribute("aria-hidden", "true");
+    trap.style.cssText = "position:fixed;left:-9999px;top:-9999px;opacity:0;width:1px;height:1px;";
+    document.body.appendChild(trap);
+    trap.focus();
+    pasteCapture.trap = trap;
+    toast("Paste capture started. Take a screenshot, then press Ctrl+V (⌘V on Mac).");
+  }
+
+  function stopPasteCapture(navigate = true) {
+    if (!pasteCapture.active) return;
+    pasteCapture.active = false;
+    document.removeEventListener("paste", handlePasteEvent, true);
+    document.removeEventListener("keydown", pasteCaptureHotkey, true);
+    if (pasteCapture.panel) { pasteCapture.panel.remove(); pasteCapture.panel = null; }
+    if (pasteCapture.trap) { pasteCapture.trap.remove(); pasteCapture.trap = null; }
+    const kind = pasteCapture.contextKind;
+    const ctx = pasteCapture.context;
+    pasteCapture.contextKind = null;
+    pasteCapture.context = null;
+    pasteCapture.resolveTarget = null;
+    pasteCapture.count = 0;
+    if (!navigate) return;
+    if (kind === "guide" && ctx?.guideId) openEditor(ctx.guideId);
+    else if (kind === "run" && ctx?.planId) {
+      state.activeTestId = ctx.testId;
+      state.activeRunId = ctx.runId;
+      openTestPlan(ctx.planId, ctx.testId);
+    }
+  }
+
+  function pasteCaptureHotkey(e) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      stopPasteCapture();
+    }
+  }
+
+  async function handlePasteEvent(e) {
+    if (!pasteCapture.active) return;
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    let imageItem = null;
+    for (const item of items) {
+      if (item.kind === "file" && item.type && item.type.startsWith("image/")) {
+        imageItem = item;
+        break;
+      }
+    }
+    if (!imageItem) return; // let text/etc. paste normally
+    e.preventDefault();
+    e.stopPropagation();
+    const file = imageItem.getAsFile();
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = await compressScreenshot(reader.result);
+      addPastedStep(dataUrl);
+    };
+    reader.onerror = () => toast("Couldn't read pasted image.");
+    reader.readAsDataURL(file);
+  }
+
+  function addPastedStep(dataUrl) {
+    const target = pasteCapture.resolveTarget && pasteCapture.resolveTarget();
+    if (!target) return;
+    if (pasteCapture.contextKind === "run") {
+      const { plan, test, run } = target;
+      if (!plan || !test || !run) return;
+      let step;
+      const last = run.steps[run.steps.length - 1];
+      if (last && !last.image && !last.title && !last.instruction) {
+        step = last;
+      } else {
+        step = createRunStep();
+        run.steps.push(step);
+      }
+      step.image = dataUrl;
+      step.hotspot = null;
+      step.annotations = [];
+      pasteCapture.count++;
+      touchTestPlan(plan);
+      if (state.view === "testplan-editor" && state.activeTestPlanId === plan.id
+          && state.activeTestId === test.id && state.activeRunId === run.id) {
+        renderRunSteps(plan, test, run);
+        renderTestList(plan);
+      }
+    } else {
+      const { guide } = target;
+      if (!guide) return;
+      let step;
+      const last = guide.steps[guide.steps.length - 1];
+      if (
+        guide.steps.length === 1 && !last.image && !last.title && !last.instruction
+      ) {
+        step = last;
+      } else {
+        step = createStep();
+        guide.steps.push(step);
+      }
+      step.image = dataUrl;
+      step.hotspot = null;
+      pasteCapture.count++;
+      touchGuide(guide);
+      if (state.view === "editor" && state.activeGuideId === guide.id) {
+        state.activeStepId = step.id;
+        renderStepList(guide);
+        renderActiveStep(guide);
+      }
+    }
+    flashPastePanel();
+    updatePastePanelCount();
+    // Rendering may have stolen focus; restore the trap so the next Ctrl+V works.
+    if (pasteCapture.trap) pasteCapture.trap.focus();
+  }
+
+  function showPastePanel() {
+    const panel = document.createElement("div");
+    panel.className = "capture-panel paste-panel";
+    panel.innerHTML = `
+      <div class="capture-dot capture-dot-paste"></div>
+      <div class="capture-text">
+        <strong>Paste capture</strong>
+        <span class="capture-count">Take a screenshot, then Ctrl+V</span>
+      </div>
+      <button class="btn btn-ghost btn-sm" data-pc="rec" title="Use the Screen Capture API instead">Screen recording</button>
+      <button class="btn btn-ghost btn-sm" data-pc="stop">Stop</button>
+    `;
+    panel.querySelector('[data-pc="rec"]').addEventListener("click", switchPasteToScreenRecording);
+    panel.querySelector('[data-pc="stop"]').addEventListener("click", () => stopPasteCapture(true));
+    makeDraggable(panel);
+    document.body.appendChild(panel);
+    pasteCapture.panel = panel;
+  }
+
+  function updatePastePanelCount() {
+    if (!pasteCapture.panel) return;
+    const el = pasteCapture.panel.querySelector(".capture-count");
+    if (el) el.textContent = `${pasteCapture.count} step${pasteCapture.count === 1 ? "" : "s"} pasted`;
+  }
+
+  function flashPastePanel() {
+    if (!pasteCapture.panel) return;
+    pasteCapture.panel.classList.add("flash");
+    setTimeout(() => pasteCapture.panel && pasteCapture.panel.classList.remove("flash"), 250);
+  }
+
+  function startPasteCaptureForGuide(guide) {
+    startPasteCapture("guide", { guideId: guide.id }, () => {
+      const g = getGuide(guide.id);
+      return { guide: g };
+    });
+  }
+
+  function startPasteCaptureForRun(plan, test, run) {
+    startPasteCapture("run", { planId: plan.id, testId: test.id, runId: run.id }, () => {
+      const p = getTestPlan(plan.id);
+      const t = getTest(p, test.id);
+      const r = getRun(t, run.id);
+      return { plan: p, test: t, run: r };
+    });
+  }
+
+  function switchPasteToScreenRecording() {
+    const kind = pasteCapture.contextKind;
+    const ctx = pasteCapture.context;
+    stopPasteCapture(false);
+    if (kind === "guide" && ctx?.guideId) {
+      const g = getGuide(ctx.guideId);
+      if (g) startCapture(g);
+    } else if (kind === "run" && ctx?.planId) {
+      const p = getTestPlan(ctx.planId);
+      const t = getTest(p, ctx.testId);
+      const r = getRun(t, ctx.runId);
+      if (p && t && r) startCaptureForRun(p, t, r);
+    }
+  }
+
   // ---------- Generalized capture for runs ----------
   function startCaptureForRun(plan, test, run) {
     capture.contextKind = "run";
@@ -2173,7 +2383,7 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
       case "export-guide": exportGuide(); break;
       case "export-pdf": exportPdf(); break;
       case "export-word": exportWord(); break;
-      case "start-capture": if (guide) startCapture(guide); break;
+      case "start-capture": if (guide) startPasteCaptureForGuide(guide); break;
       case "play-guide":
         if (guide) {
           state.view = "player";
@@ -2207,11 +2417,11 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
         else if (plan && test) { startRun(plan, test); }
         break;
       case "run-capture":
-        if (plan && test && run) startCaptureForRun(plan, test, run);
+        if (plan && test && run) startPasteCaptureForRun(plan, test, run);
         else if (plan && test) {
           startRun(plan, test);
           const r2 = getRun(getTest(plan, state.activeTestId), state.activeRunId);
-          if (r2) startCaptureForRun(plan, test, r2);
+          if (r2) startPasteCaptureForRun(plan, test, r2);
         }
         break;
       case "export-test-pdf": exportTestEvidence("pdf"); break;
