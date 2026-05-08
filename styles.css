@@ -940,6 +940,24 @@ select.meta-input {
 }
 .run-step-instruction:focus { border-color: var(--primary); }
 
+.run-step-grip {
+  cursor: grab;
+  color: var(--muted);
+  font-size: 14px;
+  padding: 2px 4px;
+  user-select: none;
+}
+.run-step-grip:active { cursor: grabbing; }
+
+/* Drag-and-drop visuals */
+.dragging { opacity: 0.4; }
+.drop-above { box-shadow: 0 -2px 0 0 var(--primary) inset; }
+.drop-below { box-shadow: 0 2px 0 0 var(--primary) inset; }
+.step-list .drop-above { box-shadow: 0 -2px 0 0 var(--primary); }
+.step-list .drop-below { box-shadow: 0 2px 0 0 var(--primary); }
+.run-step.drop-above { box-shadow: 0 -3px 0 0 var(--primary); }
+.run-step.drop-below { box-shadow: 0 3px 0 0 var(--primary); }
+
 /* Annotations on canvas */
 .ann-hotspot {
   position: absolute;
@@ -985,6 +1003,39 @@ select.meta-input {
   justify-content: center;
   padding: 0;
   pointer-events: auto;
+}
+/* Variant for free-floating delete (arrow midpoint, pin, pen start) */
+.ann-del-pos {
+  top: auto;
+  right: auto;
+  transform: translate(-50%, -50%);
+}
+
+/* SVG layer hosting arrows + free-hand strokes */
+.ann-svg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* Numbered pin */
+.ann-pin {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--danger);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: translate(-50%, -50%);
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.25);
+  pointer-events: auto;
+  user-select: none;
 }
 
 /* Past runs */

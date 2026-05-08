@@ -58,13 +58,21 @@ Pick **New test plan** from the home menu, then:
 3. **Pick a test** from the list. Search by number or name; filter by status (Not Run / Pass / Fail / Blocked).
 4. **Toggle environment** with the dropdown in the sidebar — the test list re-colors to show that env's status, and the active run switches to the latest run for the selected env.
 5. **Start a run** — captures evidence for the current `(test, environment)` pair. Each run records its tester, start time, and status.
-6. **Capture evidence** — use **Capture** to grab screen frames (F9 hotkey) or **+ Add step** to upload a screenshot. Then drop annotations:
-   - **Hotspot** — click marker (one per step)
-   - **Box** — drag to draw a red rectangle around the area of interest
+6. **Capture evidence** — use **Capture** (paste-to-capture by default; see below) or **+ Add step** to upload a screenshot. Then drop annotations on each step:
+   - **Hotspot** — single click marker (one per step)
+   - **Box** — drag to outline an area
+   - **Arrow** — drag from start to end; arrowhead drawn at the destination
+   - **Pin** — click to drop an auto-numbered red pin (1, 2, 3…) for "do these in order"
+   - **Pen** — drag to free-hand draw on the screenshot
    - **Label** — click and type to drop a red text caption
-7. **Set status** — Pass / Fail / Blocked, with a notes field for defect IDs.
-8. **Re-run** with **New run** — preserves prior runs as history (visible in the **Past runs** disclosure under the active run).
-9. **Export** the test as an **Evidence PDF** or **Word** doc (per-test cover page + every run's metadata + captured steps with annotations burned in), or export the whole plan as a **PDF / Word summary table** or full **JSON**.
+7. **Reorder steps and tests** by dragging — grab a step's `⡿` handle (or any test row) and drop it where you want.
+8. **Set status** — Pass / Fail / Blocked, with a notes field for defect IDs.
+9. **Re-run** with **New run** — preserves prior runs as history (visible in the **Past runs** disclosure under the active run).
+10. **Export** options:
+    - **Evidence PDF / Word** — per-test cover page + every run's metadata + captured steps with annotations burned in
+    - **Summary PDF / Word** — table of every test in the plan with its status for the active environment
+    - **Failures PDF / Word** — defect summary: every test whose latest run is Fail or Blocked, with all captured evidence inline. Useful for hand-off at the end of a cycle
+    - **JSON** — full-fidelity round-trip
 
 ### CSV example
 
@@ -156,8 +164,11 @@ Screen recording works in current Chrome, Edge, Firefox, and Safari (macOS 13+),
               "image": "data:image/png;base64,...",
               "hotspot": { "x": 0.42, "y": 0.78 },
               "annotations": [
-                { "id": "...", "type": "box", "x": 0.1, "y": 0.2, "w": 0.3, "h": 0.1 },
-                { "id": "...", "type": "label", "x": 0.5, "y": 0.5, "text": "Expected: 200 OK" }
+                { "id": "...", "type": "box",   "x": 0.1, "y": 0.2, "w": 0.3, "h": 0.1 },
+                { "id": "...", "type": "label", "x": 0.5, "y": 0.5, "text": "Expected: 200 OK" },
+                { "id": "...", "type": "arrow", "x1": 0.1, "y1": 0.2, "x2": 0.4, "y2": 0.5 },
+                { "id": "...", "type": "pin",   "x": 0.5, "y": 0.4, "n": 1 },
+                { "id": "...", "type": "pen",   "points": [{"x":0.1,"y":0.1},{"x":0.2,"y":0.15}] }
               ]
             }
           ]

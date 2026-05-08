@@ -86,10 +86,15 @@
         <ol class="step-list test-list" id="test-list"></ol>
         <div class="editor-actions">
           <div class="export-group">
-            <span class="export-label">Export</span>
-            <button class="btn btn-ghost btn-sm" data-action="export-plan-pdf">Plan PDF</button>
-            <button class="btn btn-ghost btn-sm" data-action="export-plan-word">Plan Word</button>
+            <span class="export-label">Plan</span>
+            <button class="btn btn-ghost btn-sm" data-action="export-plan-pdf">Summary PDF</button>
+            <button class="btn btn-ghost btn-sm" data-action="export-plan-word">Summary Word</button>
             <button class="btn btn-ghost btn-sm" data-action="export-plan-json">JSON</button>
+          </div>
+          <div class="export-group">
+            <span class="export-label">Defects</span>
+            <button class="btn btn-ghost btn-sm" data-action="export-failures-pdf">Failures PDF</button>
+            <button class="btn btn-ghost btn-sm" data-action="export-failures-word">Failures Word</button>
           </div>
           <button class="btn btn-danger btn-sm" data-action="delete-testplan">Delete plan</button>
         </div>
@@ -148,14 +153,16 @@
   <template id="tpl-run-step">
     <div class="run-step">
       <div class="run-step-header">
+        <span class="run-step-grip" title="Drag to reorder">&#10495;</span>
         <span class="run-step-num"></span>
         <input class="run-step-title" data-bind="step-title" placeholder="Step title" />
         <div class="run-step-tools">
           <button class="tool-btn" data-tool="hotspot" title="Click hotspot">&#9737;</button>
           <button class="tool-btn" data-tool="box" title="Box">&#9633;</button>
+          <button class="tool-btn" data-tool="arrow" title="Arrow">&#8599;</button>
+          <button class="tool-btn" data-tool="pin" title="Numbered pin">&#9450;</button>
+          <button class="tool-btn" data-tool="pen" title="Free-hand pen">&#9998;</button>
           <button class="tool-btn" data-tool="label" title="Label">A</button>
-          <button class="icon-btn" data-action="step-up" title="Move up">&uarr;</button>
-          <button class="icon-btn" data-action="step-down" title="Move down">&darr;</button>
           <button class="icon-btn" data-action="step-replace" title="Replace image">&#10227;</button>
           <button class="icon-btn" data-action="step-delete" title="Delete">&times;</button>
         </div>

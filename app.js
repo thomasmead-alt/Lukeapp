@@ -404,11 +404,11 @@
   function renderStepList(guide) {
     const list = $("#step-list");
     list.replaceChildren();
+    const items = [];
     guide.steps.forEach((step, i) => {
       const li = document.createElement("li");
       li.className = "step-item" + (step.id === state.activeStepId ? " active" : "");
       li.dataset.stepId = step.id;
-      li.draggable = true;
       li.innerHTML = `
         <span class="step-index"></span>
         <span class="step-name"></span>
@@ -436,6 +436,13 @@
         });
       });
       list.appendChild(li);
+      items.push(li);
+    });
+    attachReorder(items, (from, to) => {
+      const [s] = guide.steps.splice(from, 1);
+      guide.steps.splice(to, 0, s);
+      touchGuide(guide);
+      renderStepList(guide);
     });
   }
 
@@ -749,10 +756,13 @@
       return;
     }
 
+    const items = [];
+    const indexOfTestInPlan = (id) => plan.tests.findIndex((x) => x.id === id);
     filtered.forEach((t) => {
       const li = document.createElement("li");
       const s = statusFor(t, env);
       li.className = "step-item test-item" + (t.id === state.activeTestId ? " active" : "");
+      li.dataset.testId = t.id;
       li.innerHTML = `
         <span class="status-dot status-${s}" title="${STATUS_LABELS[s]}"></span>
         <span class="test-num-tag"></span>
@@ -767,7 +777,21 @@
         renderActiveTest(plan);
       });
       list.appendChild(li);
+      items.push(li);
     });
+    // Only reorder when the list isn't filtered/searched, otherwise indices would lie.
+    const unfiltered = !state.testFilter && state.statusFilter === "all"
+      && filtered.length === plan.tests.length;
+    if (unfiltered) {
+      attachReorder(items, (from, to) => {
+        const fromId = items[from].dataset.testId;
+        const toIdInPlan = indexOfTestInPlan(fromId);
+        const [t] = plan.tests.splice(toIdInPlan, 1);
+        plan.tests.splice(to, 0, t);
+        touchTestPlan(plan);
+        renderTestList(plan);
+      });
+    }
   }
 
   function renderActiveTest(plan) {
@@ -885,6 +909,7 @@
       wrap.appendChild(empty);
       return;
     }
+    const items = [];
     run.steps.forEach((step, i) => {
       const node = tpl("tpl-run-step");
       const root = node.querySelector(".run-step");
@@ -949,12 +974,22 @@
       });
 
       wrap.appendChild(node);
+      items.push(root);
     });
+    attachReorder(items, (from, to) => {
+      const [s] = run.steps.splice(from, 1);
+      run.steps.splice(to, 0, s);
+      touchTestPlan(plan);
+      renderRunSteps(plan, test, run);
+    }, { handleSelector: ".run-step-grip" });
   }
 
   function toolHint(tool) {
     if (tool === "hotspot") return "Click to place a click hotspot.";
     if (tool === "box") return "Drag to draw a box around the area of interest.";
+    if (tool === "arrow") return "Drag from where attention starts to where it ends.";
+    if (tool === "pin") return "Click to drop a numbered pin (auto-incremented).";
+    if (tool === "pen") return "Drag to free-hand draw on the screenshot.";
     if (tool === "label") return "Click to drop a label.";
     return "";
   }
@@ -1214,6 +1249,56 @@
   function safeFilename(s) {
     return (s || "guide").replace(/[^a-z0-9_-]+/gi, "-").toLowerCase().slice(0, 60) || "guide";
   }
+
+  // ---------- Drag-and-drop reordering ----------
+  // Wires HTML5 drag/drop on a list of elements. `onReorder(from, to)` mutates
+  // the underlying array; the caller is responsible for re-rendering and
+  // persisting.
+  function attachReorder(items, onReorder, options = {}) {
+    let dragIdx = null;
+    const { handleSelector, axis = "y" } = options;
+    items.forEach((el, idx) => {
+      const handle = handleSelector ? el.querySelector(handleSelector) : el;
+      if (!handle) return;
+      handle.draggable = true;
+      handle.addEventListener("dragstart", (e) => {
+        dragIdx = idx;
+        e.dataTransfer.effectAllowed = "move";
+        try { e.dataTransfer.setData("text/plain", String(idx)); } catch (_) {}
+        el.classList.add("dragging");
+      });
+      handle.addEventListener("dragend", () => {
+        dragIdx = null;
+        el.classList.remove("dragging");
+        items.forEach((n) => n.classList.remove("drop-above", "drop-below"));
+      });
+      el.addEventListener("dragover", (e) => {
+        if (dragIdx === null || dragIdx === idx) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        const rect = el.getBoundingClientRect();
+        const ratio = axis === "x"
+          ? (e.clientX - rect.left) / rect.width
+          : (e.clientY - rect.top) / rect.height;
+        const after = ratio > 0.5;
+        items.forEach((n) => n.classList.remove("drop-above", "drop-below"));
+        el.classList.add(after ? "drop-below" : "drop-above");
+      });
+      el.addEventListener("dragleave", () => {
+        el.classList.remove("drop-above", "drop-below");
+      });
+      el.addEventListener("drop", (e) => {
+        e.preventDefault();
+        if (dragIdx === null) return;
+        const after = el.classList.contains("drop-below");
+        items.forEach((n) => n.classList.remove("drop-above", "drop-below"));
+        let target = idx + (after ? 1 : 0);
+        if (target > dragIdx) target--;
+        if (dragIdx !== target) onReorder(dragIdx, target);
+        dragIdx = null;
+      });
+    });
+  }
   function loadImage(src) {
     return new Promise((resolve, reject) => {
       const img = new Image();
@@ -1281,10 +1366,15 @@
 
   function drawAnnotation(ctx, canvas, ann) {
     const W = canvas.width, H = canvas.height;
+    const stroke = Math.max(3, Math.min(W, H) * 0.004);
+    ctx.strokeStyle = "rgba(226, 85, 75, 0.95)";
+    ctx.fillStyle = "rgba(226, 85, 75, 0.95)";
+    ctx.lineWidth = stroke;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
     if (ann.type === "box") {
       const x = ann.x * W, y = ann.y * H, w = ann.w * W, h = ann.h * H;
-      ctx.strokeStyle = "rgba(226, 85, 75, 0.95)";
-      ctx.lineWidth = Math.max(3, Math.min(W, H) * 0.004);
       ctx.strokeRect(x, y, w, h);
     } else if (ann.type === "label") {
       const x = ann.x * W, y = ann.y * H;
@@ -1294,12 +1384,51 @@
       const metrics = ctx.measureText(ann.text);
       const tw = metrics.width + padX * 2;
       const th = fontPx + padY * 2;
-      ctx.fillStyle = "rgba(226, 85, 75, 0.95)";
-      const rectX = x, rectY = y;
-      ctx.fillRect(rectX, rectY, tw, th);
+      ctx.fillRect(x, y, tw, th);
       ctx.fillStyle = "#ffffff";
       ctx.textBaseline = "top";
-      ctx.fillText(ann.text, rectX + padX, rectY + padY);
+      ctx.fillText(ann.text, x + padX, y + padY);
+    } else if (ann.type === "arrow") {
+      const x1 = ann.x1 * W, y1 = ann.y1 * H;
+      const x2 = ann.x2 * W, y2 = ann.y2 * H;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      // Arrowhead
+      const angle = Math.atan2(y2 - y1, x2 - x1);
+      const headLen = Math.max(10, stroke * 4);
+      ctx.beginPath();
+      ctx.moveTo(x2, y2);
+      ctx.lineTo(x2 - headLen * Math.cos(angle - Math.PI / 6),
+                 y2 - headLen * Math.sin(angle - Math.PI / 6));
+      ctx.lineTo(x2 - headLen * Math.cos(angle + Math.PI / 6),
+                 y2 - headLen * Math.sin(angle + Math.PI / 6));
+      ctx.closePath();
+      ctx.fill();
+    } else if (ann.type === "pin") {
+      const x = ann.x * W, y = ann.y * H;
+      const r = Math.max(14, Math.min(W, H) * 0.022);
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = Math.max(2, stroke * 0.5);
+      ctx.stroke();
+      ctx.fillStyle = "#ffffff";
+      ctx.font = `700 ${Math.round(r * 1.15)}px -apple-system, "Segoe UI", Roboto, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(ann.n), x, y + 1);
+      ctx.textAlign = "start";
+    } else if (ann.type === "pen") {
+      if (!ann.points || ann.points.length < 2) return;
+      ctx.beginPath();
+      ctx.moveTo(ann.points[0].x * W, ann.points[0].y * H);
+      for (let i = 1; i < ann.points.length; i++) {
+        ctx.lineTo(ann.points[i].x * W, ann.points[i].y * H);
+      }
+      ctx.stroke();
     }
   }
 
@@ -1619,6 +1748,146 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
     }
   }
 
+  // Defect summary: every test whose latest run on the active environment is
+  // Fail or Blocked. Includes the run's notes and all captured steps with
+  // annotations baked in, so it doubles as a hand-off document for fixers.
+  async function buildFailuresHtml(plan) {
+    const env = plan.activeEnvironment;
+    const failures = plan.tests
+      .map((t) => ({ test: t, run: latestRunForEnv(t, env) }))
+      .filter(({ run }) => run && (run.status === "Fail" || run.status === "Blocked"));
+
+    if (failures.length === 0) {
+      const css = `body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+                          margin: 32px; color: #1a1a1a; }
+                   h1 { margin: 0 0 8px; }
+                   .ok { padding: 24px; background: #def4e2; color: #1a6c2c;
+                         border-radius: 6px; font-weight: 600; }`;
+      return `<!doctype html><html><head><meta charset="utf-8">
+<title>${escapeHtml(plan.title || "Test plan")} — Defect Summary</title>
+<style>${css}</style></head><body>
+<h1>${escapeHtml(plan.title || "Test plan")} — Defect Summary</h1>
+<p>Environment: <strong>${escapeHtml(env)}</strong> &middot; Generated ${escapeHtml(formatDateTime(Date.now()))}</p>
+<div class="ok">No failed or blocked tests on ${escapeHtml(env)}.</div>
+</body></html>`;
+    }
+
+    const sections = await Promise.all(failures.map(async ({ test, run }) => {
+      const composed = await Promise.all(run.steps.map(composeStepImage));
+      const stepsHtml = run.steps.map((s, i) => {
+        const num = String(i + 1).padStart(2, "0");
+        const title = escapeHtml(s.title || `Step ${i + 1}`);
+        const instr = s.instruction ? `<p class="instr">${escapeHtml(s.instruction)}</p>` : "";
+        const imgTag = composed[i]
+          ? `<img src="${composed[i]}" alt="" />`
+          : `<div class="no-img">No screenshot</div>`;
+        return `<section class="step">
+          <h4><span class="num">${num}</span>${title}</h4>
+          ${imgTag}${instr}
+        </section>`;
+      }).join("");
+      const stamp = `status-${run.status}`;
+      const meta = [
+        ["Test", `${test.number || "—"} · ${test.name || "Untitled"}`],
+        ["Status", STATUS_LABELS[run.status]],
+        ["Environment", run.environment],
+        ["Tester", run.tester || "—"],
+        ["Run started", formatDateTime(run.startedAt)],
+        ["Run finished", run.finishedAt ? formatDateTime(run.finishedAt) : "—"],
+      ];
+      if (test.priority) meta.push(["Priority", test.priority]);
+      if (test.expected) meta.push(["Expected", test.expected]);
+      if (run.notes) meta.push(["Notes / defect", run.notes]);
+      const metaRows = meta.map(([k, v]) =>
+        `<tr><th>${escapeHtml(k)}</th><td>${escapeHtml(v)}</td></tr>`).join("");
+      return `<section class="failure">
+        <header class="failure-head">
+          <span class="failure-tag ${stamp}">${escapeHtml(STATUS_LABELS[run.status])}</span>
+          <h2>${escapeHtml(test.number || "—")} · ${escapeHtml(test.name || "Untitled test")}</h2>
+        </header>
+        <table class="meta">${metaRows}</table>
+        ${stepsHtml || `<p class="muted">No evidence captured for this run.</p>`}
+      </section>`;
+    }));
+
+    const counts = {
+      Fail: failures.filter(({ run }) => run.status === "Fail").length,
+      Blocked: failures.filter(({ run }) => run.status === "Blocked").length,
+    };
+
+    const css = `
+      body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+             color: #1a1a1a; margin: 32px; line-height: 1.5; }
+      h1 { font-size: 26px; margin: 0 0 4px; }
+      h2 { font-size: 18px; margin: 0; }
+      h4 { font-size: 14px; margin: 14px 0 6px; }
+      .num { color: #4f8cff; font-weight: 700; margin-right: 8px; }
+      .cover { background: #f4f6fa; border: 1px solid #e0e3ea; border-radius: 6px;
+               padding: 18px 22px; margin-bottom: 28px; }
+      .cover-sub { color: #555; margin: 0 0 12px; }
+      .pills span { display: inline-block; padding: 4px 12px; border-radius: 999px;
+                    font-size: 12px; margin-right: 6px; font-weight: 600; }
+      .pill-Fail { background: #fbe1de; color: #91261d; }
+      .pill-Blocked { background: #fff0d0; color: #80560a; }
+      .failure { margin: 0 0 36px; padding-bottom: 24px;
+                 border-bottom: 1px solid #e0e3ea; page-break-inside: avoid; }
+      .failure-head { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; }
+      .failure-tag { display: inline-block; font-size: 11px; font-weight: 700;
+                     letter-spacing: 1px; text-transform: uppercase;
+                     padding: 3px 10px; border-radius: 999px; }
+      .failure-tag.status-Fail { background: #fbe1de; color: #91261d; }
+      .failure-tag.status-Blocked { background: #fff0d0; color: #80560a; }
+      table.meta { width: 100%; border-collapse: collapse; font-size: 13px;
+                   margin-bottom: 14px; }
+      table.meta th { text-align: left; padding: 4px 12px 4px 0; color: #666;
+                      font-weight: 500; width: 130px; vertical-align: top; }
+      table.meta td { padding: 4px 0; }
+      .step img { display: block; max-width: 100%; height: auto;
+                  border: 1px solid #ddd; border-radius: 4px; }
+      .no-img { padding: 30px; background: #f4f5f7; color: #888;
+                text-align: center; border-radius: 4px; }
+      .instr { margin: 8px 0 0; white-space: pre-wrap; }
+      .muted { color: #888; }
+      .step { margin: 0 0 14px; page-break-inside: avoid; }
+      @page { margin: 18mm; }
+      @media print { body { margin: 0; } .failure { page-break-after: always; }
+        .failure:last-of-type { page-break-after: auto; } }`;
+
+    return `<!doctype html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office"
+      xmlns:w="urn:schemas-microsoft-com:office:word"
+      xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta charset="utf-8" />
+<title>${escapeHtml(plan.title || "Test plan")} — Defect Summary</title>
+<style>${css}</style></head><body>
+<div class="cover">
+  <h1>${escapeHtml(plan.title || "Test plan")} — Defect Summary</h1>
+  <p class="cover-sub">Environment <strong>${escapeHtml(env)}</strong>
+    · Tester ${escapeHtml(plan.tester || "—")}
+    · Generated ${escapeHtml(formatDateTime(Date.now()))}</p>
+  <div class="pills">
+    <span class="pill-Fail">${counts.Fail} Failed</span>
+    <span class="pill-Blocked">${counts.Blocked} Blocked</span>
+  </div>
+</div>
+${sections.join("")}
+</body></html>`;
+  }
+
+  async function exportFailuresReport(format) {
+    const plan = getTestPlan(state.activeTestPlanId);
+    if (!plan) return;
+    try {
+      const html = await buildFailuresHtml(plan);
+      const base = `${safeFilename(plan.title || "test-plan")}-defects`;
+      if (format === "pdf") printHtmlToPdf(html, "Preparing defect report...");
+      else downloadHtmlAsWord(html, `${base}.doc`);
+    } catch (e) {
+      console.error(e);
+      toast("Couldn't build defect report: " + e.message);
+    }
+  }
+
   async function exportPlanSummary(format) {
     const plan = getTestPlan(state.activeTestPlanId);
     if (!plan) return;
@@ -1894,6 +2163,23 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
   }
 
   // ---------- Annotations ----------
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const ANN_COLOR = "#e2554b";
+
+  function makeDelButton(onRemove, posLeft, posTop) {
+    const del = document.createElement("button");
+    del.className = "ann-del";
+    del.textContent = "×";
+    del.title = "Remove";
+    if (posLeft != null) {
+      del.style.left = posLeft + "px";
+      del.style.top = posTop + "px";
+      del.classList.add("ann-del-pos");
+    }
+    del.addEventListener("click", (e) => { e.stopPropagation(); onRemove(); });
+    return del;
+  }
+
   function paintAnnotations(canvas, img, overlay, step) {
     overlay.replaceChildren();
     if (!step.image) return;
@@ -1904,6 +2190,19 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
     overlay.style.left = img.offsetLeft + "px";
     overlay.style.top = img.offsetTop + "px";
 
+    // Single SVG layer for arrows + pen strokes (vector annotations).
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("class", "ann-svg");
+    svg.setAttribute("width", w);
+    svg.setAttribute("height", h);
+    svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+    const defs = document.createElementNS(SVG_NS, "defs");
+    defs.innerHTML = `<marker id="ann-arrowhead" viewBox="0 0 10 10" refX="8" refY="5"
+        markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="${ANN_COLOR}"></path></marker>`;
+    svg.appendChild(defs);
+    overlay.appendChild(svg);
+
     if (step.hotspot) {
       const dot = document.createElement("div");
       dot.className = "ann-hotspot";
@@ -1911,6 +2210,7 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
       dot.style.top = step.hotspot.y * h + "px";
       overlay.appendChild(dot);
     }
+
     (step.annotations || []).forEach((a) => {
       if (a.type === "box") {
         const el = document.createElement("div");
@@ -1919,15 +2219,7 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
         el.style.top = a.y * h + "px";
         el.style.width = a.w * w + "px";
         el.style.height = a.h * h + "px";
-        const del = document.createElement("button");
-        del.className = "ann-del";
-        del.textContent = "×";
-        del.title = "Remove";
-        del.addEventListener("click", (e) => {
-          e.stopPropagation();
-          removeAnnotation(step, a.id);
-        });
-        el.appendChild(del);
+        el.appendChild(makeDelButton(() => removeAnnotation(step, a.id)));
         overlay.appendChild(el);
       } else if (a.type === "label") {
         const el = document.createElement("div");
@@ -1935,15 +2227,48 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
         el.style.left = a.x * w + "px";
         el.style.top = a.y * h + "px";
         el.textContent = a.text;
-        const del = document.createElement("button");
-        del.className = "ann-del";
-        del.textContent = "×";
-        del.addEventListener("click", (e) => {
-          e.stopPropagation();
-          removeAnnotation(step, a.id);
-        });
-        el.appendChild(del);
+        el.appendChild(makeDelButton(() => removeAnnotation(step, a.id)));
         overlay.appendChild(el);
+      } else if (a.type === "arrow") {
+        const line = document.createElementNS(SVG_NS, "line");
+        line.setAttribute("x1", a.x1 * w);
+        line.setAttribute("y1", a.y1 * h);
+        line.setAttribute("x2", a.x2 * w);
+        line.setAttribute("y2", a.y2 * h);
+        line.setAttribute("stroke", ANN_COLOR);
+        line.setAttribute("stroke-width", "3");
+        line.setAttribute("stroke-linecap", "round");
+        line.setAttribute("marker-end", "url(#ann-arrowhead)");
+        svg.appendChild(line);
+        overlay.appendChild(makeDelButton(
+          () => removeAnnotation(step, a.id),
+          ((a.x1 + a.x2) / 2) * w,
+          ((a.y1 + a.y2) / 2) * h
+        ));
+      } else if (a.type === "pin") {
+        const pin = document.createElement("div");
+        pin.className = "ann-pin";
+        pin.style.left = a.x * w + "px";
+        pin.style.top = a.y * h + "px";
+        pin.textContent = a.n;
+        pin.appendChild(makeDelButton(() => removeAnnotation(step, a.id)));
+        overlay.appendChild(pin);
+      } else if (a.type === "pen") {
+        if (!a.points || a.points.length < 2) return;
+        const poly = document.createElementNS(SVG_NS, "polyline");
+        poly.setAttribute("points",
+          a.points.map((p) => `${p.x * w},${p.y * h}`).join(" "));
+        poly.setAttribute("stroke", ANN_COLOR);
+        poly.setAttribute("stroke-width", "3");
+        poly.setAttribute("fill", "none");
+        poly.setAttribute("stroke-linecap", "round");
+        poly.setAttribute("stroke-linejoin", "round");
+        svg.appendChild(poly);
+        const first = a.points[0];
+        overlay.appendChild(makeDelButton(
+          () => removeAnnotation(step, a.id),
+          first.x * w, first.y * h
+        ));
       }
     });
   }
@@ -1969,6 +2294,7 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
     if (start.x < 0 || start.x > 1 || start.y < 0 || start.y > 1) return;
     e.preventDefault();
     state.activeRunStepId = step.id;
+    step.annotations = step.annotations || [];
 
     if (tool === "hotspot") {
       step.hotspot = { x: clamp01(start.x), y: clamp01(start.y) };
@@ -1981,35 +2307,89 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
       openLabelPrompt();
       return;
     }
+    if (tool === "pin") {
+      const existingPins = step.annotations.filter((a) => a.type === "pin");
+      const n = (existingPins.length === 0 ? 1
+        : Math.max(...existingPins.map((a) => a.n || 0)) + 1);
+      step.annotations.push({ id: uid(), type: "pin", x: start.x, y: start.y, n });
+      touchTestPlan(plan);
+      paintAnnotations(canvas, img, overlay, step);
+      return;
+    }
     if (tool === "box") {
-      // Start drag-to-draw
-      const ann = {
-        id: uid(), type: "box", x: start.x, y: start.y, w: 0, h: 0,
-      };
-      step.annotations = step.annotations || [];
+      const ann = { id: uid(), type: "box", x: start.x, y: start.y, w: 0, h: 0 };
       step.annotations.push(ann);
-      const onMove = (mv) => {
-        const r2 = img.getBoundingClientRect();
-        const cx = clamp01((mv.clientX - r2.left) / r2.width);
-        const cy = clamp01((mv.clientY - r2.top) / r2.height);
+      dragWith(img, (cx, cy) => {
         ann.x = Math.min(start.x, cx);
         ann.y = Math.min(start.y, cy);
         ann.w = Math.abs(cx - start.x);
         ann.h = Math.abs(cy - start.y);
         paintAnnotations(canvas, img, overlay, step);
-      };
-      const onUp = () => {
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
+      }, () => {
         if (ann.w < 0.005 || ann.h < 0.005) {
           step.annotations = step.annotations.filter((a) => a.id !== ann.id);
         }
         touchTestPlan(plan);
         paintAnnotations(canvas, img, overlay, step);
-      };
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
+      });
+      return;
     }
+    if (tool === "arrow") {
+      const ann = {
+        id: uid(), type: "arrow",
+        x1: start.x, y1: start.y, x2: start.x, y2: start.y,
+      };
+      step.annotations.push(ann);
+      dragWith(img, (cx, cy) => {
+        ann.x2 = cx;
+        ann.y2 = cy;
+        paintAnnotations(canvas, img, overlay, step);
+      }, () => {
+        const dx = ann.x2 - ann.x1, dy = ann.y2 - ann.y1;
+        if (Math.hypot(dx, dy) < 0.01) {
+          step.annotations = step.annotations.filter((a) => a.id !== ann.id);
+        }
+        touchTestPlan(plan);
+        paintAnnotations(canvas, img, overlay, step);
+      });
+      return;
+    }
+    if (tool === "pen") {
+      const ann = {
+        id: uid(), type: "pen", points: [{ x: start.x, y: start.y }],
+      };
+      step.annotations.push(ann);
+      const minDist = 0.005; // sample threshold (image-relative)
+      dragWith(img, (cx, cy) => {
+        const last = ann.points[ann.points.length - 1];
+        if (Math.hypot(cx - last.x, cy - last.y) < minDist) return;
+        ann.points.push({ x: cx, y: cy });
+        paintAnnotations(canvas, img, overlay, step);
+      }, () => {
+        if (ann.points.length < 2) {
+          step.annotations = step.annotations.filter((a) => a.id !== ann.id);
+        }
+        touchTestPlan(plan);
+        paintAnnotations(canvas, img, overlay, step);
+      });
+    }
+  }
+
+  // Helper: drive a pointer-drag and report normalized image coordinates.
+  function dragWith(img, onMove, onEnd) {
+    const move = (mv) => {
+      const r = img.getBoundingClientRect();
+      const cx = clamp01((mv.clientX - r.left) / r.width);
+      const cy = clamp01((mv.clientY - r.top) / r.height);
+      onMove(cx, cy);
+    };
+    const up = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      onEnd();
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
   }
 
   // ---------- Modals ----------
@@ -2429,6 +2809,8 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
       case "export-plan-pdf": exportPlanSummary("pdf"); break;
       case "export-plan-word": exportPlanSummary("word"); break;
       case "export-plan-json": exportPlanSummary("json"); break;
+      case "export-failures-pdf": exportFailuresReport("pdf"); break;
+      case "export-failures-word": exportFailuresReport("word"); break;
     }
   });
 
