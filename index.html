@@ -13,9 +13,10 @@
       <span class="brand-name">ClickGuide</span>
     </div>
     <nav class="app-nav">
-      <button class="btn btn-ghost" data-action="go-home">My guides</button>
+      <button class="btn btn-ghost" data-action="go-home">Home</button>
+      <button class="btn btn-ghost" data-action="open-settings" title="Settings">Settings</button>
       <button class="btn btn-ghost" data-action="import-guide">Import</button>
-      <button class="btn btn-primary" data-action="new-guide">New guide</button>
+      <button class="btn btn-primary" data-action="new-menu">New &#9662;</button>
     </nav>
   </header>
 
@@ -23,22 +24,219 @@
 
   <input type="file" id="screenshot-input" accept="image/*" hidden />
   <input type="file" id="import-input" accept="application/json" hidden />
+  <input type="file" id="csv-input" accept=".csv,text/csv" hidden />
 
   <template id="tpl-home">
     <section class="home">
       <div class="home-hero">
-        <h1>Capture once. Teach forever.</h1>
-        <p>Build click-by-click walkthroughs of any application. Add screenshots, mark hotspots, write instructions, and share an interactive guide your team can actually follow.</p>
+        <h1>Capture once. Teach &amp; test forever.</h1>
+        <p>Build click-by-click walkthroughs <em>or</em> structured test runs. Capture screenshots, drop hotspots, annotate, and export evidence as PDF, Word, or JSON.</p>
         <div class="home-cta">
-          <button class="btn btn-primary btn-lg" data-action="new-guide">Create a new guide</button>
+          <button class="btn btn-primary btn-lg" data-action="new-guide">New guide</button>
+          <button class="btn btn-primary btn-lg" data-action="new-testplan">New test plan</button>
           <button class="btn btn-ghost btn-lg" data-action="import-guide">Import JSON</button>
         </div>
       </div>
+      <div class="home-tabs">
+        <button class="home-tab" data-tab="guides">Guides</button>
+        <button class="home-tab" data-tab="testplans">Test plans</button>
+      </div>
       <div class="home-list">
-        <h2>Your guides</h2>
         <div id="guide-list" class="guide-grid"></div>
       </div>
     </section>
+  </template>
+
+  <template id="tpl-testplan-editor">
+    <section class="editor testplan-editor">
+      <aside class="editor-side">
+        <div class="editor-meta">
+          <input class="title-input" data-bind="title" placeholder="Untitled test plan" />
+          <textarea class="desc-input" data-bind="description" placeholder="What does this test plan cover?"></textarea>
+          <div class="tp-meta-row">
+            <label class="field">
+              <span>Tester</span>
+              <input class="meta-input" data-bind="tester" placeholder="Your name" />
+            </label>
+            <label class="field">
+              <span>Environment</span>
+              <select class="meta-input" data-bind="environment"></select>
+            </label>
+          </div>
+          <div class="tp-meta-row">
+            <button class="btn btn-ghost btn-sm" data-action="import-csv">Import CSV</button>
+            <button class="btn btn-ghost btn-sm" data-action="add-test">+ Add test</button>
+            <button class="btn btn-ghost btn-sm" data-action="manage-environments">Environments</button>
+          </div>
+        </div>
+        <div class="step-list-header">
+          <h3>Tests</h3>
+          <span id="test-count" class="muted-count"></span>
+        </div>
+        <div class="tp-filters">
+          <input id="test-search" class="meta-input" placeholder="Search by # or name..." />
+          <select id="status-filter" class="meta-input">
+            <option value="all">All statuses</option>
+            <option value="NotRun">Not Run</option>
+            <option value="Pass">Pass</option>
+            <option value="Fail">Fail</option>
+            <option value="Blocked">Blocked</option>
+          </select>
+        </div>
+        <ol class="step-list test-list" id="test-list"></ol>
+        <div class="editor-actions">
+          <div class="export-group">
+            <span class="export-label">Export</span>
+            <button class="btn btn-ghost btn-sm" data-action="export-plan-pdf">Plan PDF</button>
+            <button class="btn btn-ghost btn-sm" data-action="export-plan-word">Plan Word</button>
+            <button class="btn btn-ghost btn-sm" data-action="export-plan-json">JSON</button>
+          </div>
+          <button class="btn btn-danger btn-sm" data-action="delete-testplan">Delete plan</button>
+        </div>
+      </aside>
+      <section class="editor-main testplan-main" id="testplan-main"></section>
+    </section>
+  </template>
+
+  <template id="tpl-test-detail">
+    <div class="test-detail">
+      <header class="test-header">
+        <div class="test-header-top">
+          <span class="test-num"></span>
+          <h2 class="test-name" data-bind="test-name"></h2>
+        </div>
+        <div class="test-meta-grid"></div>
+      </header>
+
+      <div class="run-card" id="run-card">
+        <div class="run-card-header">
+          <div>
+            <span class="run-env-badge"></span>
+            <span class="run-when muted-count"></span>
+          </div>
+          <div class="run-actions">
+            <button class="btn btn-ghost btn-sm" data-action="new-run">New run</button>
+            <button class="btn btn-ghost btn-sm" data-action="export-test-pdf">Evidence PDF</button>
+            <button class="btn btn-ghost btn-sm" data-action="export-test-word">Evidence Word</button>
+          </div>
+        </div>
+        <div class="run-status-row">
+          <div class="status-buttons" role="radiogroup" aria-label="Status">
+            <button class="status-btn" data-status="Pass">&#10003; Pass</button>
+            <button class="status-btn" data-status="Fail">&#10007; Fail</button>
+            <button class="status-btn" data-status="Blocked">&#9209; Blocked</button>
+          </div>
+          <textarea class="run-notes" data-bind="run-notes" placeholder="Notes / defect ID..."></textarea>
+        </div>
+        <div class="run-step-toolbar">
+          <strong>Steps</strong>
+          <div class="run-step-actions">
+            <button class="btn btn-ghost btn-sm" data-action="run-capture">&#9679; Capture</button>
+            <button class="btn btn-ghost btn-sm" data-action="run-add-step">+ Add step</button>
+          </div>
+        </div>
+        <div class="run-steps" id="run-steps"></div>
+      </div>
+
+      <details class="past-runs" id="past-runs">
+        <summary>Past runs</summary>
+        <div class="past-runs-list" id="past-runs-list"></div>
+      </details>
+    </div>
+  </template>
+
+  <template id="tpl-run-step">
+    <div class="run-step">
+      <div class="run-step-header">
+        <span class="run-step-num"></span>
+        <input class="run-step-title" data-bind="step-title" placeholder="Step title" />
+        <div class="run-step-tools">
+          <button class="tool-btn" data-tool="hotspot" title="Click hotspot">&#9737;</button>
+          <button class="tool-btn" data-tool="box" title="Box">&#9633;</button>
+          <button class="tool-btn" data-tool="label" title="Label">A</button>
+          <button class="icon-btn" data-action="step-up" title="Move up">&uarr;</button>
+          <button class="icon-btn" data-action="step-down" title="Move down">&darr;</button>
+          <button class="icon-btn" data-action="step-replace" title="Replace image">&#10227;</button>
+          <button class="icon-btn" data-action="step-delete" title="Delete">&times;</button>
+        </div>
+      </div>
+      <div class="run-canvas-wrap">
+        <div class="run-canvas">
+          <img class="run-canvas-img" alt="" />
+          <div class="run-overlay"></div>
+        </div>
+        <p class="canvas-hint"></p>
+      </div>
+      <textarea class="run-step-instruction" data-bind="step-instruction" placeholder="What did you do? What happened?"></textarea>
+    </div>
+  </template>
+
+  <template id="tpl-settings">
+    <div class="modal-backdrop">
+      <div class="modal" role="dialog" aria-modal="true">
+        <header class="modal-header">
+          <h2>Settings</h2>
+          <button class="icon-btn" data-action="close-modal">&times;</button>
+        </header>
+        <div class="modal-body">
+          <label class="field">
+            <span>Default tester name</span>
+            <input class="meta-input" data-bind="settings-tester" />
+          </label>
+          <label class="field">
+            <span>Environments (one per line)</span>
+            <textarea class="meta-input" data-bind="settings-envs" rows="6"></textarea>
+          </label>
+          <p class="muted-count">Used as defaults for new test plans.</p>
+        </div>
+        <footer class="modal-footer">
+          <button class="btn btn-ghost" data-action="close-modal">Cancel</button>
+          <button class="btn btn-primary" data-action="save-settings">Save</button>
+        </footer>
+      </div>
+    </div>
+  </template>
+
+  <template id="tpl-environments">
+    <div class="modal-backdrop">
+      <div class="modal" role="dialog" aria-modal="true">
+        <header class="modal-header">
+          <h2>Environments for this plan</h2>
+          <button class="icon-btn" data-action="close-modal">&times;</button>
+        </header>
+        <div class="modal-body">
+          <label class="field">
+            <span>One per line. The active environment is selected from this list.</span>
+            <textarea class="meta-input" data-bind="plan-envs" rows="8"></textarea>
+          </label>
+        </div>
+        <footer class="modal-footer">
+          <button class="btn btn-ghost" data-action="close-modal">Cancel</button>
+          <button class="btn btn-primary" data-action="save-plan-envs">Save</button>
+        </footer>
+      </div>
+    </div>
+  </template>
+
+  <template id="tpl-label-prompt">
+    <div class="modal-backdrop">
+      <div class="modal modal-sm" role="dialog" aria-modal="true">
+        <header class="modal-header">
+          <h2>Add label</h2>
+          <button class="icon-btn" data-action="close-modal">&times;</button>
+        </header>
+        <div class="modal-body">
+          <label class="field">
+            <span>Label text</span>
+            <input class="meta-input" data-bind="label-text" autofocus />
+          </label>
+        </div>
+        <footer class="modal-footer">
+          <button class="btn btn-ghost" data-action="close-modal">Cancel</button>
+          <button class="btn btn-primary" data-action="save-label">Add</button>
+        </footer>
+      </div>
+    </div>
   </template>
 
   <template id="tpl-editor">
