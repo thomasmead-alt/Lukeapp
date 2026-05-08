@@ -514,6 +514,36 @@ main {
 }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 
+/* Storage warning banner */
+.storage-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: rgba(255, 182, 72, 0.1);
+  border-bottom: 1px solid rgba(255, 182, 72, 0.4);
+  color: var(--accent);
+  font-size: 13px;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+.storage-banner .banner-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #1a1410;
+  font-weight: 700;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.storage-banner .banner-text { flex: 1; color: var(--text); }
+.storage-banner .icon-btn { color: var(--muted); }
+
 /* Capture panel */
 .capture-panel {
   position: fixed;

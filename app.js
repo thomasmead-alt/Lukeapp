@@ -38,48 +38,122 @@
   const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
   // ---------- Persistence ----------
-  function load() {
+  // Storage may be unavailable (file:// origin restrictions, private mode,
+  // disabled by policy) or fill up. We probe up front, then no-op writes when
+  // unavailable and surface a persistent banner so the user knows their work
+  // won't survive a refresh.
+  const storage = {
+    available: false,
+    reason: "",
+    warned: false,
+  };
+
+  function probeStorage() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return [];
+      const k = "__cg_probe__";
+      localStorage.setItem(k, "1");
+      const ok = localStorage.getItem(k) === "1";
+      localStorage.removeItem(k);
+      if (!ok) throw new Error("read-back mismatch");
+      storage.available = true;
+    } catch (e) {
+      storage.available = false;
+      storage.reason = describeStorageError(e);
+      console.warn("localStorage unavailable:", e);
+    }
+  }
+
+  function describeStorageError(e) {
+    const name = (e && e.name) || "";
+    const msg = (e && e.message) || String(e);
+    if (name === "QuotaExceededError" || /quota/i.test(msg)) {
+      return "Browser storage is full. Export anything important as JSON, then delete old guides or runs.";
+    }
+    if (name === "SecurityError" || /denied|disabled|access/i.test(msg)) {
+      return "Browser blocked storage on this page. If you opened the file directly, run it from a local server (e.g. `python3 -m http.server`) and reload.";
+    }
+    return "Browser storage isn't working. Your work this session won't be saved across refreshes.";
+  }
+
+  function showStorageBanner(text) {
+    const existing = $("#storage-banner");
+    if (existing) {
+      existing.querySelector(".banner-text").textContent = text;
+      return;
+    }
+    const banner = document.createElement("div");
+    banner.id = "storage-banner";
+    banner.className = "storage-banner";
+    banner.innerHTML = `
+      <span class="banner-icon">!</span>
+      <span class="banner-text"></span>
+      <button class="icon-btn" data-banner-close title="Dismiss">&times;</button>
+    `;
+    banner.querySelector(".banner-text").textContent = text;
+    banner.querySelector("[data-banner-close]").addEventListener("click", () => banner.remove());
+    document.body.insertBefore(banner, document.body.firstChild);
+  }
+
+  function reportStorageError(e) {
+    storage.available = false;
+    storage.reason = describeStorageError(e);
+    console.error(e);
+    if (!storage.warned) {
+      storage.warned = true;
+      showStorageBanner(storage.reason);
+    }
+  }
+
+  function safeRead(key) {
+    if (!storage.available) return null;
+    try {
+      return localStorage.getItem(key);
+    } catch (e) {
+      reportStorageError(e);
+      return null;
+    }
+  }
+
+  function safeWrite(key, value) {
+    if (!storage.available) return false;
+    try {
+      localStorage.setItem(key, value);
+      return true;
+    } catch (e) {
+      reportStorageError(e);
+      return false;
+    }
+  }
+
+  function load() {
+    const raw = safeRead(STORAGE_KEY);
+    if (!raw) return [];
+    try {
       const parsed = JSON.parse(raw);
       return Array.isArray(parsed) ? parsed : [];
     } catch (e) {
-      console.warn("Failed to load guides", e);
+      console.warn("Failed to parse guides", e);
       return [];
     }
   }
 
-  function save() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.guides));
-    } catch (e) {
-      // localStorage quota can be hit when multiple screenshots are stored as data URLs
-      toast("Couldn't save. Storage quota may be full.");
-      console.error(e);
-    }
-  }
+  function save() { safeWrite(STORAGE_KEY, JSON.stringify(state.guides)); }
 
   function loadTestPlans() {
+    const raw = safeRead(TESTPLANS_KEY);
+    if (!raw) return [];
     try {
-      const raw = localStorage.getItem(TESTPLANS_KEY);
-      if (!raw) return [];
       const parsed = JSON.parse(raw);
       return Array.isArray(parsed) ? parsed : [];
     } catch (e) { return []; }
   }
-  function saveTestPlans() {
-    try {
-      localStorage.setItem(TESTPLANS_KEY, JSON.stringify(state.testplans));
-    } catch (e) {
-      toast("Couldn't save. Storage quota may be full.");
-      console.error(e);
-    }
-  }
+
+  function saveTestPlans() { safeWrite(TESTPLANS_KEY, JSON.stringify(state.testplans)); }
+
   function loadSettings() {
+    const raw = safeRead(SETTINGS_KEY);
+    if (!raw) return null;
     try {
-      const raw = localStorage.getItem(SETTINGS_KEY);
-      if (!raw) return null;
       const parsed = JSON.parse(raw);
       if (!parsed || typeof parsed !== "object") return null;
       return {
@@ -89,11 +163,8 @@
       };
     } catch (e) { return null; }
   }
-  function saveSettings() {
-    try {
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings));
-    } catch (e) { console.error(e); }
-  }
+
+  function saveSettings() { safeWrite(SETTINGS_KEY, JSON.stringify(state.settings)); }
 
   // ---------- Models ----------
   function createGuide() {
@@ -1116,9 +1187,9 @@
       return;
     }
     const reader = new FileReader();
-    reader.onload = () => {
-      step.image = reader.result;
-      step.hotspot = null; // reset hotspot for new image
+    reader.onload = async () => {
+      step.image = await compressScreenshot(reader.result);
+      step.hotspot = null;
       touchGuide(guide);
       renderActiveStep(guide);
     };
@@ -1148,6 +1219,31 @@
       img.onerror = () => reject(new Error("Image load failed"));
       img.src = src;
     });
+  }
+
+  // Downsize + recompress to keep localStorage usage manageable. PNG screenshots
+  // can be 5-10MB each; this typically gets them under 300KB.
+  async function compressScreenshot(dataUrl, opts = {}) {
+    const { maxDim = 1600, quality = 0.85, type = "image/jpeg" } = opts;
+    if (!dataUrl) return dataUrl;
+    try {
+      const img = await loadImage(dataUrl);
+      let w = img.naturalWidth, h = img.naturalHeight;
+      if (!w || !h) return dataUrl;
+      const scale = Math.min(1, maxDim / Math.max(w, h));
+      const targetW = Math.round(w * scale);
+      const targetH = Math.round(h * scale);
+      const canvas = document.createElement("canvas");
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext("2d");
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(img, 0, 0, targetW, targetH);
+      return canvas.toDataURL(type, quality);
+    } catch (e) {
+      console.warn("Screenshot compression failed, using original", e);
+      return dataUrl;
+    }
   }
 
   // ---------- Document export (PDF + Word) ----------
@@ -1586,7 +1682,7 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
     }
   }
 
-  function captureFrame() {
+  async function captureFrame() {
     if (!capture.video) return;
     const w = capture.video.videoWidth;
     const h = capture.video.videoHeight;
@@ -1599,7 +1695,9 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
     const canvas = document.createElement("canvas");
     canvas.width = w; canvas.height = h;
     canvas.getContext("2d").drawImage(capture.video, 0, 0);
-    const dataUrl = canvas.toDataURL("image/png");
+    // Capture as PNG then immediately compress so quota usage stays low.
+    const rawUrl = canvas.toDataURL("image/png");
+    const dataUrl = await compressScreenshot(rawUrl);
 
     if (capture.contextKind === "run") {
       const { plan, test, run } = target;
@@ -2171,8 +2269,8 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
       return;
     }
     const reader = new FileReader();
-    reader.onload = () => {
-      step.image = reader.result;
+    reader.onload = async () => {
+      step.image = await compressScreenshot(reader.result);
       step.hotspot = null;
       step.annotations = [];
       touchTestPlan(plan);
@@ -2214,6 +2312,11 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
   });
 
   // ---------- Boot ----------
+  probeStorage();
+  if (!storage.available) {
+    storage.warned = true;
+    showStorageBanner(storage.reason);
+  }
   state.guides = load();
   state.testplans = loadTestPlans();
   const savedSettings = loadSettings();
