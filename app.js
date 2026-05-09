@@ -519,18 +519,17 @@
       li.className = "step-item" + (step.id === state.activeStepId ? " active" : "");
       li.dataset.stepId = step.id;
       li.innerHTML = `
+        <span class="row-grip" title="Drag to reorder">&#10495;</span>
         <span class="step-index"></span>
         <span class="step-name"></span>
         <span class="step-actions">
-          <button class="icon-btn" title="Move up" data-act="up">&uarr;</button>
-          <button class="icon-btn" title="Move down" data-act="down">&darr;</button>
           <button class="icon-btn" title="Delete" data-act="del">&times;</button>
         </span>
       `;
       li.querySelector(".step-index").textContent = String(i + 1).padStart(2, "0");
       li.querySelector(".step-name").textContent = step.title || "Untitled step";
       li.addEventListener("click", (e) => {
-        if (e.target.closest(".step-actions")) return;
+        if (e.target.closest(".step-actions") || e.target.closest(".row-grip")) return;
         state.activeStepId = step.id;
         renderStepList(guide);
         renderActiveStep(guide);
@@ -538,10 +537,7 @@
       li.querySelectorAll(".icon-btn").forEach((btn) => {
         btn.addEventListener("click", (e) => {
           e.stopPropagation();
-          const act = btn.dataset.act;
-          if (act === "up") moveStep(guide, i, -1);
-          else if (act === "down") moveStep(guide, i, 1);
-          else if (act === "del") deleteStep(guide, step.id);
+          if (btn.dataset.act === "del") deleteStep(guide, step.id);
         });
       });
       list.appendChild(li);
@@ -552,7 +548,7 @@
       guide.steps.splice(to, 0, s);
       touchGuide(guide);
       renderStepList(guide);
-    });
+    }, { handleSelector: ".row-grip" });
   }
 
   function renderActiveStep(guide) {
@@ -784,12 +780,21 @@
   function renderTestPlanEditor(root) {
     const plan = getTestPlan(state.activeTestPlanId);
     if (!plan) { state.view = "home"; return render(); }
+    // Defensive: fill in any fields that older saves might be missing so
+    // rendering never throws partway through and leaves the editor blank.
+    plan.tests = Array.isArray(plan.tests) ? plan.tests : [];
+    plan.environments = Array.isArray(plan.environments) && plan.environments.length
+      ? plan.environments
+      : [...(state.settings.environments || DEFAULT_ENVS)];
+    if (!plan.activeEnvironment || !plan.environments.includes(plan.activeEnvironment)) {
+      plan.activeEnvironment = plan.environments[0];
+    }
     root.appendChild(tpl("tpl-testplan-editor"));
 
     // Bind meta inputs
-    $('[data-bind="title"]').value = plan.title;
-    $('[data-bind="description"]').value = plan.description;
-    $('[data-bind="tester"]').value = plan.tester;
+    $('[data-bind="title"]').value = plan.title || "";
+    $('[data-bind="description"]').value = plan.description || "";
+    $('[data-bind="tester"]').value = plan.tester || "";
 
     $('[data-bind="title"]').addEventListener("input", (e) => {
       plan.title = e.target.value; touchTestPlan(plan);
@@ -875,13 +880,19 @@
       li.className = "step-item test-item" + (t.id === state.activeTestId ? " active" : "");
       li.dataset.testId = t.id;
       li.innerHTML = `
-        <span class="status-dot status-${s}" title="${STATUS_LABELS[s]}"></span>
+        <span class="row-grip" title="Drag to reorder">&#10495;</span>
+        <span class="status-dot status-${s}" title="${STATUS_LABELS[s]} on ${escapeHtml(env)}"></span>
         <span class="test-num-tag"></span>
         <span class="step-name"></span>
+        <span class="test-attempts" title="Total attempts across all environments"></span>
       `;
       li.querySelector(".test-num-tag").textContent = t.number || "—";
       li.querySelector(".step-name").textContent = t.name || "Untitled test";
-      li.addEventListener("click", () => {
+      const attempts = (t.runs || []).length;
+      li.querySelector(".test-attempts").textContent =
+        attempts > 0 ? `&times;${attempts}`.replace("&times;", "×") : "";
+      li.addEventListener("click", (e) => {
+        if (e.target.closest(".row-grip")) return;
         state.activeTestId = t.id;
         state.activeRunId = null;
         renderTestList(plan);
@@ -901,7 +912,7 @@
         plan.tests.splice(to, 0, t);
         touchTestPlan(plan);
         renderTestList(plan);
-      });
+      }, { handleSelector: ".row-grip" });
     }
   }
 
@@ -928,6 +939,38 @@
       const item = $(`#test-list .test-item.active .step-name`);
       if (item) item.textContent = test.name || "Untitled test";
     });
+
+    // Per-environment status row: one pill per environment showing the
+    // latest status and the run count, so testers can see at a glance
+    // where this test stands across the whole pipeline.
+    const envRow = main.querySelector(".test-env-row");
+    if (envRow) {
+      plan.environments.forEach((envName) => {
+        const latest = latestRunForEnv(test, envName);
+        const status = latest ? latest.status : "NotRun";
+        const count = (test.runs || []).filter((r) => r.environment === envName).length;
+        const pill = document.createElement("button");
+        pill.className = `env-pill status-${status}` + (envName === plan.activeEnvironment ? " active" : "");
+        pill.title = `${envName}: ${STATUS_LABELS[status]} · ${count} run${count === 1 ? "" : "s"}. Click to switch.`;
+        pill.innerHTML = `
+          <span class="env-pill-name"></span>
+          <span class="env-pill-status">${escapeHtml(STATUS_LABELS[status])}</span>
+          <span class="env-pill-count">${count > 0 ? "&times;" + count : ""}</span>
+        `.replace("&times;", "×");
+        pill.querySelector(".env-pill-name").textContent = envName;
+        pill.addEventListener("click", () => {
+          plan.activeEnvironment = envName;
+          state.activeRunId = null;
+          touchTestPlan(plan);
+          // Refresh the env dropdown selection too
+          const sel = $('[data-bind="environment"]');
+          if (sel) sel.value = envName;
+          renderTestList(plan);
+          renderActiveTest(plan);
+        });
+        envRow.appendChild(pill);
+      });
+    }
 
     // Meta grid (precondition, expected, priority)
     const grid = main.querySelector(".test-meta-grid");
@@ -2675,6 +2718,62 @@ ${sections.join("")}
   function openLabelPrompt() {
     openModal("tpl-label-prompt");
   }
+
+  // Defects window: every test whose latest run on the active environment
+  // is Fail or Blocked. Each row links straight to the test in the editor.
+  function openDefectsModal() {
+    const plan = getTestPlan(state.activeTestPlanId);
+    if (!plan) return;
+    const env = plan.activeEnvironment;
+    openModal("tpl-defects", (root) => {
+      const defects = plan.tests
+        .map((t) => ({ test: t, run: latestRunForEnv(t, env) }))
+        .filter(({ run }) => run && (run.status === "Fail" || run.status === "Blocked"));
+      const sub = root.querySelector("#defects-sub");
+      sub.textContent = defects.length === 0
+        ? `No failed or blocked tests on ${env}.`
+        : `${defects.length} defect${defects.length === 1 ? "" : "s"} on ${env}.`;
+      const body = root.querySelector("#defects-body");
+      if (defects.length === 0) {
+        const ok = document.createElement("div");
+        ok.className = "defects-empty";
+        ok.textContent = "Nothing to fix here.";
+        body.appendChild(ok);
+        return;
+      }
+      defects.forEach(({ test, run }) => {
+        const row = document.createElement("button");
+        row.className = "defect-row";
+        row.innerHTML = `
+          <span class="defect-status status-${run.status}">${escapeHtml(STATUS_LABELS[run.status])}</span>
+          <span class="defect-num"></span>
+          <span class="defect-name"></span>
+          <span class="defect-attempts muted-count"></span>
+          <span class="defect-tester muted-count"></span>
+          <span class="defect-when muted-count"></span>
+          <span class="defect-notes"></span>
+          <span class="defect-jump" aria-hidden="true">&rarr;</span>
+        `;
+        row.querySelector(".defect-num").textContent = test.number || "—";
+        row.querySelector(".defect-name").textContent = test.name || "Untitled test";
+        const attempts = (test.runs || []).filter((r) => r.environment === env).length;
+        row.querySelector(".defect-attempts").textContent =
+          attempts > 0 ? `${attempts} run${attempts === 1 ? "" : "s"}` : "";
+        row.querySelector(".defect-tester").textContent = run.tester ? `by ${run.tester}` : "";
+        row.querySelector(".defect-when").textContent = run.startedAt
+          ? formatDateTime(run.startedAt) : "";
+        row.querySelector(".defect-notes").textContent = run.notes || "(no notes)";
+        row.addEventListener("click", () => {
+          state.activeTestId = test.id;
+          state.activeRunId = run.id;
+          closeModal();
+          renderTestList(plan);
+          renderActiveTest(plan);
+        });
+        body.appendChild(row);
+      });
+    });
+  }
   function saveLabel() {
     if (!modalEl || !state.pendingLabel) { closeModal(); return; }
     const text = modalEl.querySelector('[data-bind="label-text"]').value.trim();
@@ -3028,6 +3127,7 @@ ${sections.join("")}
       case "export-plan-json": exportPlanSummary("json"); break;
       case "export-failures-pdf": exportFailuresReport("pdf"); break;
       case "export-failures-word": exportFailuresReport("word"); break;
+      case "view-defects": openDefectsModal(); break;
     }
   });
 
@@ -3154,11 +3254,18 @@ ${sections.join("")}
 
     if (idb.available) {
       try {
-        await migrateLegacyImages();
+        const migrated = await migrateLegacyImages();
+        const beforeCache = imageCache.size;
         await preloadImages();
-        // Re-render so any cached images now appear.
-        render();
-        // Drop orphaned image rows that nothing references.
+        const loaded = imageCache.size - beforeCache;
+        // Only re-render if something visually changed AND we're in a view
+        // that displays images. Re-rendering home or rerendering nothing new
+        // would needlessly steal focus from any input the user is typing in.
+        if ((migrated > 0 || loaded > 0)
+            && (state.view === "editor" || state.view === "testplan-editor"
+                || state.view === "player")) {
+          render();
+        }
         gcOrphanImages();
       } catch (e) {
         console.warn("Image migration/preload failed", e);
@@ -3196,6 +3303,7 @@ ${sections.join("")}
       saveTestPlans();
       console.log(`Migrated ${migrated} screenshot(s) to IndexedDB.`);
     }
+    return migrated;
   }
 
   // Pull every referenced image into the in-memory cache so render paths

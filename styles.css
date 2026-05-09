@@ -694,7 +694,18 @@ select.meta-input {
 }
 .test-list .test-item {
   display: grid;
-  grid-template-columns: auto auto 1fr;
+  grid-template-columns: auto auto auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+.test-attempts {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+.step-list .step-item {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
   gap: 8px;
   align-items: center;
 }
@@ -940,14 +951,18 @@ select.meta-input {
 }
 .run-step-instruction:focus { border-color: var(--primary); }
 
-.run-step-grip {
+.run-step-grip,
+.row-grip {
   cursor: grab;
   color: var(--muted);
   font-size: 14px;
   padding: 2px 4px;
   user-select: none;
+  flex-shrink: 0;
 }
-.run-step-grip:active { cursor: grabbing; }
+.run-step-grip:active,
+.row-grip:active { cursor: grabbing; }
+.row-grip:hover { color: var(--text); }
 
 /* Drag-and-drop visuals */
 .dragging { opacity: 0.4; }
@@ -1113,10 +1128,97 @@ select.meta-input {
 .new-menu { gap: 10px; }
 .new-menu .btn { width: 100%; justify-content: flex-start; }
 
+/* Per-environment status row in the test detail header */
+.test-env-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.env-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.env-pill:hover { border-color: var(--primary); }
+.env-pill.active { background: rgba(79, 140, 255, 0.12); border-color: var(--primary); }
+.env-pill-name { font-family: var(--mono); font-weight: 600; }
+.env-pill-status { color: var(--muted); }
+.env-pill-count { color: var(--muted); font-family: var(--mono); }
+.env-pill.status-Pass .env-pill-status { color: #5cd07b; }
+.env-pill.status-Fail .env-pill-status { color: #f08278; }
+.env-pill.status-Blocked .env-pill-status { color: var(--accent); }
+
+/* Defects modal */
+.modal-lg { width: 760px; max-width: 100%; }
+#defects-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 8px;
+}
+.defects-empty {
+  padding: 32px;
+  text-align: center;
+  color: #5cd07b;
+  background: rgba(58, 168, 92, 0.08);
+  border-radius: var(--radius-sm);
+}
+.defect-row {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto auto auto;
+  grid-template-areas:
+    "status num   name      attempts tester  when"
+    ".      notes notes     notes    notes   jump";
+  gap: 6px 12px;
+  align-items: center;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+}
+.defect-row:hover { border-color: var(--primary); }
+.defect-status { grid-area: status; padding: 2px 8px; border-radius: 999px;
+                 font-size: 10px; font-weight: 700; letter-spacing: 1px;
+                 text-transform: uppercase; }
+.defect-status.status-Fail { background: rgba(226, 85, 75, 0.18); color: #f08278; }
+.defect-status.status-Blocked { background: rgba(255, 182, 72, 0.18); color: var(--accent); }
+.defect-num { grid-area: num; font-family: var(--mono); color: var(--muted); }
+.defect-name { grid-area: name; font-weight: 600; }
+.defect-attempts { grid-area: attempts; }
+.defect-tester { grid-area: tester; }
+.defect-when { grid-area: when; }
+.defect-notes { grid-area: notes; color: var(--muted); white-space: pre-wrap;
+                padding-top: 4px; border-top: 1px dashed var(--border); }
+.defect-jump { grid-area: jump; color: var(--primary); font-size: 16px; }
+
 @media (max-width: 900px) {
   .editor { flex-direction: column; }
   .editor-side { width: 100%; flex: 0 0 auto; border-right: none; border-bottom: 1px solid var(--border); }
   .testplan-editor .editor-side { width: 100%; flex: 0 0 auto; }
   .player-stage { grid-template-columns: 1fr; }
   .run-status-row { grid-template-columns: 1fr; }
+  .defect-row {
+    grid-template-columns: auto 1fr auto;
+    grid-template-areas:
+      "status name name"
+      "num    name attempts"
+      "tester when when"
+      "notes  notes notes"
+      "jump   jump  jump";
+  }
 }

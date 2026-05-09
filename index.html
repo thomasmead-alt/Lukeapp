@@ -93,8 +93,9 @@
           </div>
           <div class="export-group">
             <span class="export-label">Defects</span>
-            <button class="btn btn-ghost btn-sm" data-action="export-failures-pdf">Failures PDF</button>
-            <button class="btn btn-ghost btn-sm" data-action="export-failures-word">Failures Word</button>
+            <button class="btn btn-ghost btn-sm" data-action="view-defects">View &#9656;</button>
+            <button class="btn btn-ghost btn-sm" data-action="export-failures-pdf">PDF</button>
+            <button class="btn btn-ghost btn-sm" data-action="export-failures-word">Word</button>
           </div>
           <button class="btn btn-danger btn-sm" data-action="delete-testplan">Delete plan</button>
         </div>
@@ -110,6 +111,7 @@
           <span class="test-num"></span>
           <h2 class="test-name" data-bind="test-name"></h2>
         </div>
+        <div class="test-env-row" title="Status by environment"></div>
         <div class="test-meta-grid"></div>
       </header>
 
@@ -220,6 +222,26 @@
         <footer class="modal-footer">
           <button class="btn btn-ghost" data-action="close-modal">Cancel</button>
           <button class="btn btn-primary" data-action="save-plan-envs">Save</button>
+        </footer>
+      </div>
+    </div>
+  </template>
+
+  <template id="tpl-defects">
+    <div class="modal-backdrop">
+      <div class="modal modal-lg" role="dialog" aria-modal="true">
+        <header class="modal-header">
+          <div>
+            <h2>Defects</h2>
+            <p class="muted-count" id="defects-sub"></p>
+          </div>
+          <button class="icon-btn" data-action="close-modal">&times;</button>
+        </header>
+        <div class="modal-body" id="defects-body"></div>
+        <footer class="modal-footer">
+          <button class="btn btn-ghost" data-action="export-failures-pdf">Export PDF</button>
+          <button class="btn btn-ghost" data-action="export-failures-word">Export Word</button>
+          <button class="btn btn-primary" data-action="close-modal">Close</button>
         </footer>
       </div>
     </div>
