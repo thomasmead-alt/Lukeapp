@@ -745,6 +745,7 @@ select.meta-input {
 .test-detail { display: flex; flex-direction: column; gap: 16px; }
 .test-header { display: flex; flex-direction: column; gap: 12px; }
 .test-header-top { display: flex; align-items: center; gap: 12px; }
+.test-header-actions { margin-left: auto; display: flex; gap: 6px; }
 .test-num {
   font-family: var(--mono);
   font-size: 13px;

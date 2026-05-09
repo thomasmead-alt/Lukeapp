@@ -1388,6 +1388,70 @@
     goHome();
   }
 
+  // Move a test out of a plan and into a standalone guide. Picks the most
+  // recent run that captured at least one step (or, if none, just carries
+  // the test's metadata across). Each step's screenshot is duplicated to a
+  // new IndexedDB row so the guide and the original test plan can evolve
+  // independently afterwards.
+  async function moveTestToGuide(plan, test) {
+    const runsWithSteps = (test.runs || [])
+      .filter((r) => Array.isArray(r.steps) && r.steps.length > 0);
+    const sourceRun = runsWithSteps
+      .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))[0] || null;
+
+    const sourceLabel = sourceRun
+      ? `${sourceRun.steps.length} step${sourceRun.steps.length === 1 ? "" : "s"} from the ${sourceRun.environment} run on ${formatDateTime(sourceRun.startedAt)}`
+      : "no steps (the test has no captured runs)";
+    if (!confirm(`Create a new guide from this test using ${sourceLabel}?`)) return;
+
+    const guide = createGuide();
+    const titleParts = [];
+    if (test.number) titleParts.push(test.number);
+    if (test.name) titleParts.push(test.name);
+    guide.title = titleParts.join(" · ") || "Untitled guide";
+    guide.description = [
+      test.precondition && `Precondition: ${test.precondition}`,
+      test.expected && `Expected result: ${test.expected}`,
+    ].filter(Boolean).join("\n\n");
+    guide.steps = [];
+
+    if (sourceRun) {
+      for (const s of sourceRun.steps) {
+        const newStep = createStep();
+        newStep.title = s.title || "";
+        newStep.instruction = s.instruction || "";
+        newStep.hotspot = s.hotspot ? { ...s.hotspot } : null;
+        newStep.annotations = (s.annotations || []).map((a) => ({ ...a, id: uid() }));
+        // Duplicate the screenshot so the guide owns its own IDB row.
+        let dataUrl = null;
+        if (s.imageId) {
+          try { dataUrl = await imageGet(s.imageId); } catch (_) {}
+        } else if (s.image) {
+          dataUrl = s.image;
+        }
+        if (dataUrl) await assignStepImage(newStep, dataUrl);
+        guide.steps.push(newStep);
+      }
+    }
+    if (guide.steps.length === 0) guide.steps = [createStep()];
+
+    state.guides.push(guide);
+    save();
+
+    if (confirm("Guide created. Also remove the original test from this plan?")) {
+      imageDelete(collectImageIds({ runs: test.runs || [] }));
+      const idx = plan.tests.findIndex((t) => t.id === test.id);
+      if (idx !== -1) plan.tests.splice(idx, 1);
+      if (state.activeTestId === test.id) {
+        state.activeTestId = plan.tests[0]?.id || null;
+      }
+      touchTestPlan(plan);
+    }
+
+    openEditor(guide.id);
+    toast("Moved to guide.");
+  }
+
   function addStep(guide) {
     const step = createStep();
     guide.steps.push(step);
@@ -3452,6 +3516,9 @@ ${sections.join("")}
       case "manage-environments": openEnvironments(); break;
       case "save-plan-envs": savePlanEnvs(); break;
       case "delete-testplan": deleteTestPlan(); break;
+      case "move-to-guide":
+        if (plan && test) moveTestToGuide(plan, test);
+        break;
       case "start-run": if (plan && test) startRun(plan, test); break;
       case "new-run": if (plan && test) newRun(plan, test); break;
       case "run-add-step":
