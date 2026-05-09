@@ -10,6 +10,7 @@
   const STATUS_LABELS = {
     NotRun: "Not Run", Pass: "Pass", Fail: "Fail", Blocked: "Blocked",
   };
+  const PRIORITIES = ["Critical", "High", "Medium", "Low"];
 
   // ---------- State ----------
   const state = {
@@ -25,7 +26,9 @@
     activeRunId: null,
     activeRunStepId: null,
     annotationTool: "hotspot", // "hotspot" | "box" | "label"
-    pendingLabel: null,        // { stepId, x, y } while prompt is open
+    pendingLabel: null,        // { stepId, x, y, kind } while prompt is open
+    pendingDefect: null,       // { planId, testId, runId } while raise modal open
+    pendingResolve: null,      // { planId, testId, defectId } while resolve modal open
     testFilter: "",
     statusFilter: "all",
     playerIndex: 0,
@@ -294,6 +297,7 @@
       instruction: "",
       imageId: null,         // IndexedDB key; load via resolveImage(step)
       hotspot: null,         // { x: 0..1, y: 0..1 } in image-relative coordinates
+      annotations: [],       // box / arrow / pin / pen / label, normalized
     };
   }
 
@@ -329,6 +333,22 @@
       expected: extra.expected || "",
       priority: extra.priority || "",
       runs: [],
+      defects: [],
+    };
+  }
+  function createDefect(extra = {}) {
+    return {
+      id: uid(),
+      defectId: extra.defectId || "",
+      description: extra.description || "",
+      environment: extra.environment || "",
+      raisedBy: extra.raisedBy || "",
+      raisedFromRunId: extra.raisedFromRunId || null,
+      raisedAt: Date.now(),
+      status: "Open",
+      resolution: "",
+      resolvedBy: "",
+      resolvedAt: null,
     };
   }
   function createRun(env, tester) {
@@ -587,6 +607,7 @@
     }
 
     main.appendChild(tpl("tpl-step-editor"));
+    step.annotations = step.annotations || [];
     const titleEl = $('[data-bind="step-title"]');
     const instrEl = $('[data-bind="step-instruction"]');
     titleEl.value = step.title;
@@ -594,7 +615,6 @@
     titleEl.addEventListener("input", (e) => {
       step.title = e.target.value;
       touchGuide(guide);
-      // update sidebar label
       const item = $(`.step-item[data-step-id="${step.id}"] .step-name`);
       if (item) item.textContent = step.title || "Untitled step";
     });
@@ -603,32 +623,37 @@
       touchGuide(guide);
     });
 
-    const img = $("#canvas-img");
-    img.addEventListener("load", () => positionHotspot(step), { once: true });
-    img.src = stepImage;
-    if (img.complete && img.naturalWidth) positionHotspot(step);
-
-    const canvas = $("#canvas");
-    canvas.addEventListener("click", (e) => {
-      const rect = img.getBoundingClientRect();
-      const x = (e.clientX - rect.left) / rect.width;
-      const y = (e.clientY - rect.top) / rect.height;
-      step.hotspot = { x: clamp01(x), y: clamp01(y) };
-      touchGuide(guide);
-      positionHotspot(step);
+    // Tool buttons share the same annotationTool state with run-step editing.
+    $$('#guide-tools .tool-btn').forEach((b) => {
+      b.classList.toggle("active", b.dataset.tool === state.annotationTool);
+      b.addEventListener("click", () => {
+        state.annotationTool = b.dataset.tool;
+        $$('#guide-tools .tool-btn').forEach((bb) =>
+          bb.classList.toggle("active", bb.dataset.tool === state.annotationTool));
+        const hint = $("#canvas-hint");
+        if (hint) hint.textContent = toolHint(state.annotationTool);
+      });
     });
-  }
+    const hint = $("#canvas-hint");
+    if (hint) hint.textContent = toolHint(state.annotationTool);
 
-  function positionHotspot(step) {
     const img = $("#canvas-img");
-    const hotspot = $("#hotspot");
-    if (!step.hotspot || !img) {
-      hotspot.hidden = true;
-      return;
-    }
-    hotspot.hidden = false;
-    hotspot.style.left = `${step.hotspot.x * img.clientWidth}px`;
-    hotspot.style.top = `${step.hotspot.y * img.clientHeight}px`;
+    const canvas = $("#canvas");
+    const overlay = $("#canvas-overlay");
+    const place = () => paintAnnotations(canvas, img, overlay, step);
+    img.addEventListener("load", place);
+    img.src = stepImage;
+    if (img.complete && img.naturalWidth) place();
+
+    canvas.addEventListener("mousedown", (e) => {
+      startAnnotationGesture(e, step, canvas, img, overlay, {
+        getTool: () => state.annotationTool,
+        save: () => touchGuide(guide),
+        labelPending: (s, x, y) => ({
+          kind: "guide", guideId: guide.id, stepId: s.id, x, y,
+        }),
+      });
+    });
   }
 
   // ---------- Player ----------
@@ -980,23 +1005,51 @@
       });
     }
 
-    // Meta grid (precondition, expected, priority)
+    // Meta grid (precondition, expected, priority). Priority is a select
+    // with a fixed list; if older / CSV-imported data has a value outside
+    // that list, we surface it as an extra option so it isn't lost.
     const grid = main.querySelector(".test-meta-grid");
     const fields = [
-      ["Precondition", "precondition"],
-      ["Expected", "expected"],
-      ["Priority", "priority"],
+      { label: "Precondition", key: "precondition", type: "textarea" },
+      { label: "Expected", key: "expected", type: "textarea" },
+      { label: "Priority", key: "priority", type: "select", options: PRIORITIES },
     ];
-    fields.forEach(([label, key]) => {
+    fields.forEach((f) => {
       const cell = document.createElement("label");
       cell.className = "field";
-      cell.innerHTML = `<span>${label}</span><textarea class="meta-input" rows="1"></textarea>`;
-      const ta = cell.querySelector("textarea");
-      ta.value = test[key] || "";
-      ta.addEventListener("input", (e) => {
-        test[key] = e.target.value;
-        touchTestPlan(plan);
-      });
+      const labelSpan = document.createElement("span");
+      labelSpan.textContent = f.label;
+      cell.appendChild(labelSpan);
+      if (f.type === "select") {
+        const sel = document.createElement("select");
+        sel.className = "meta-input";
+        const opts = ["", ...f.options];
+        const cur = (test[f.key] || "").trim();
+        if (cur && !opts.includes(cur)) opts.push(cur);
+        opts.forEach((value) => {
+          const opt = document.createElement("option");
+          opt.value = value;
+          opt.textContent = value || "—";
+          sel.appendChild(opt);
+        });
+        sel.value = cur;
+        sel.addEventListener("change", (e) => {
+          test[f.key] = e.target.value;
+          touchTestPlan(plan);
+          renderTestList(plan); // priority filter / display might change
+        });
+        cell.appendChild(sel);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.className = "meta-input";
+        ta.rows = 1;
+        ta.value = test[f.key] || "";
+        ta.addEventListener("input", (e) => {
+          test[f.key] = e.target.value;
+          touchTestPlan(plan);
+        });
+        cell.appendChild(ta);
+      }
       grid.appendChild(cell);
     });
 
@@ -1021,7 +1074,71 @@
       renderActiveRun(plan, test, run);
     }
 
+    renderTestDefects(plan, test);
     renderPastRuns(plan, test);
+  }
+
+  function renderTestDefects(plan, test) {
+    const wrap = $("#test-defects");
+    const list = $("#test-defects-list");
+    const summary = $("#test-defects-summary");
+    if (!wrap || !list) return;
+    const defects = Array.isArray(test.defects) ? test.defects : [];
+    if (defects.length === 0) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const open = defects.filter((d) => d.status === "Open").length;
+    const resolved = defects.length - open;
+    summary.textContent = `${defects.length} total · ${open} open · ${resolved} resolved`;
+    list.replaceChildren();
+    [...defects].sort((a, b) => {
+      if (a.status !== b.status) return a.status === "Open" ? -1 : 1;
+      return b.raisedAt - a.raisedAt;
+    }).forEach((d) => {
+      const item = document.createElement("div");
+      item.className = `defect-item defect-${d.status}`;
+      item.innerHTML = `
+        <div class="defect-item-head">
+          <span class="defect-status status-${d.status === "Open" ? "Fail" : "Pass"}">${escapeHtml(d.status)}</span>
+          <span class="defect-item-id"></span>
+          <span class="run-env-badge env-${d.environment}"></span>
+          <span class="muted-count defect-when"></span>
+          <span class="defect-tester muted-count"></span>
+          <span class="defect-actions"></span>
+        </div>
+        <p class="defect-item-desc"></p>
+        <div class="defect-item-resolution"></div>
+      `;
+      item.querySelector(".defect-item-id").textContent = d.defectId;
+      item.querySelector(".run-env-badge").textContent = d.environment || "";
+      item.querySelector(".defect-when").textContent = `raised ${formatDateTime(d.raisedAt)}`;
+      item.querySelector(".defect-tester").textContent = d.raisedBy ? `by ${d.raisedBy}` : "";
+      const desc = item.querySelector(".defect-item-desc");
+      desc.textContent = d.description || "(no description)";
+      const res = item.querySelector(".defect-item-resolution");
+      const actions = item.querySelector(".defect-actions");
+      if (d.status === "Resolved") {
+        res.innerHTML = `
+          <strong>Resolution:</strong>
+          <span class="defect-resolution-text"></span>
+          <span class="muted-count defect-resolved-meta"></span>
+        `;
+        res.querySelector(".defect-resolution-text").textContent = " " + (d.resolution || "");
+        res.querySelector(".defect-resolved-meta").textContent =
+          ` · ${formatDateTime(d.resolvedAt)}${d.resolvedBy ? " by " + d.resolvedBy : ""}`;
+        const reopen = document.createElement("button");
+        reopen.className = "btn btn-ghost btn-sm";
+        reopen.textContent = "Edit resolution";
+        reopen.addEventListener("click", () => openResolveDefect(plan, test, d));
+        actions.appendChild(reopen);
+      } else {
+        const btn = document.createElement("button");
+        btn.className = "btn btn-primary btn-sm";
+        btn.textContent = "Mark resolved";
+        btn.addEventListener("click", () => openResolveDefect(plan, test, d));
+        actions.appendChild(btn);
+      }
+      list.appendChild(item);
+    });
   }
 
   function renderActiveRun(plan, test, run) {
@@ -1114,8 +1231,15 @@
         if (img.complete && img.naturalWidth) place();
 
         canvas.addEventListener("mousedown", (e) => {
-          state.activeRunStepId = step.id;
-          startAnnotationGesture(e, plan, test, run, step, canvas, img, overlay);
+          startAnnotationGesture(e, step, canvas, img, overlay, {
+            getTool: () => state.activeRunStepId === step.id ? state.annotationTool : "hotspot",
+            onActivate: (s) => { state.activeRunStepId = s.id; },
+            save: () => touchTestPlan(plan),
+            labelPending: (s, x, y) => ({
+              kind: "run", planId: plan.id, testId: test.id, runId: run.id,
+              stepId: s.id, x, y,
+            }),
+          });
         });
       } else {
         const upload = document.createElement("button");
@@ -2060,15 +2184,33 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
       ];
       if (test.priority) meta.push(["Priority", test.priority]);
       if (test.expected) meta.push(["Expected", test.expected]);
-      if (run.notes) meta.push(["Notes / defect", run.notes]);
+      if (run.notes) meta.push(["Run notes", run.notes]);
       const metaRows = meta.map(([k, v]) =>
         `<tr><th>${escapeHtml(k)}</th><td>${escapeHtml(v)}</td></tr>`).join("");
+      // Defect history for this test, scoped to this run's environment.
+      const envDefects = (test.defects || []).filter((d) => d.environment === run.environment);
+      const defectsHtml = envDefects.length === 0 ? "" : `
+        <h3 class="defect-h3">Defects on ${escapeHtml(run.environment)} (${envDefects.length})</h3>
+        <ul class="defect-list">
+          ${envDefects.map((d) => `
+            <li class="defect-li defect-${d.status}">
+              <span class="defect-pill defect-pill-${d.status}">${escapeHtml(d.status)}</span>
+              <strong>${escapeHtml(d.defectId)}</strong>
+              <span class="muted">raised ${escapeHtml(formatDateTime(d.raisedAt))}${d.raisedBy ? " by " + escapeHtml(d.raisedBy) : ""}</span>
+              ${d.description ? `<div class="defect-desc">${escapeHtml(d.description)}</div>` : ""}
+              ${d.status === "Resolved" ? `
+                <div class="defect-res"><strong>Resolution:</strong> ${escapeHtml(d.resolution || "")}
+                  <span class="muted"> &mdash; ${escapeHtml(formatDateTime(d.resolvedAt))}${d.resolvedBy ? " by " + escapeHtml(d.resolvedBy) : ""}</span>
+                </div>` : ""}
+            </li>`).join("")}
+        </ul>`;
       return `<section class="failure">
         <header class="failure-head">
           <span class="failure-tag ${stamp}">${escapeHtml(STATUS_LABELS[run.status])}</span>
           <h2>${escapeHtml(test.number || "—")} · ${escapeHtml(test.name || "Untitled test")}</h2>
         </header>
         <table class="meta">${metaRows}</table>
+        ${defectsHtml}
         ${stepsHtml || `<p class="muted">No evidence captured for this run.</p>`}
       </section>`;
     }));
@@ -2112,6 +2254,21 @@ ${runsHtml || `<p class="muted">No runs recorded yet.</p>`}
       .instr { margin: 8px 0 0; white-space: pre-wrap; }
       .muted { color: #888; }
       .step { margin: 0 0 14px; page-break-inside: avoid; }
+      .defect-h3 { font-size: 13px; margin: 14px 0 6px; color: #1a1a1a;
+                   text-transform: uppercase; letter-spacing: 1px; }
+      .defect-list { list-style: none; padding: 0; margin: 0 0 18px; }
+      .defect-li { padding: 10px 12px; margin-bottom: 6px;
+                   border: 1px solid #e0e3ea; border-radius: 6px;
+                   font-size: 13px; }
+      .defect-li.defect-Resolved { background: #f4fbf6; border-color: #cfe6d6; }
+      .defect-pill { display: inline-block; padding: 2px 8px; border-radius: 999px;
+                     font-size: 10px; font-weight: 700; letter-spacing: 1px;
+                     margin-right: 6px; text-transform: uppercase; }
+      .defect-pill-Open { background: #fbe1de; color: #91261d; }
+      .defect-pill-Resolved { background: #def4e2; color: #1a6c2c; }
+      .defect-desc { margin-top: 4px; white-space: pre-wrap; }
+      .defect-res { margin-top: 6px; padding-top: 6px;
+                    border-top: 1px dashed #cfe6d6; white-space: pre-wrap; }
       @page { margin: 18mm; }
       @media print { body { margin: 0; } .failure { page-break-after: always; }
         .failure:last-of-type { page-break-after: auto; } }`;
@@ -2541,38 +2698,54 @@ ${sections.join("")}
     });
   }
 
+  // Where the step is "owned": "guide" (state.activeGuideId) or
+  // "run" (state.activeTestPlanId / activeTestId / activeRunId).
   function removeAnnotation(step, id) {
     step.annotations = (step.annotations || []).filter((a) => a.id !== id);
     if (step.hotspot && step.hotspot.id === id) step.hotspot = null;
+    const guide = getGuide(state.activeGuideId);
+    if (guide && getStep(guide, step.id)) {
+      touchGuide(guide);
+      renderActiveStep(guide);
+      return;
+    }
     const plan = getTestPlan(state.activeTestPlanId);
     const test = plan && getTest(plan, state.activeTestId);
     const run = test && getRun(test, state.activeRunId);
-    if (plan) {
+    if (plan && run) {
       touchTestPlan(plan);
       renderRunSteps(plan, test, run);
     }
   }
 
-  function startAnnotationGesture(e, plan, test, run, step, canvas, img, overlay) {
+  // Generic gesture handler shared by both the guide editor and the test-run
+  // step editor. ctx supplies the tool name, a labelKey for the modal flow,
+  // and a save callback so the gesture doesn't need to know which kind of
+  // container the step belongs to.
+  function startAnnotationGesture(e, step, canvas, img, overlay, ctx) {
     if (!stepHasImage(step) || !img.clientWidth) return;
-    const tool = state.activeRunStepId === step.id ? state.annotationTool : "hotspot";
+    const tool = ctx.getTool();
     const rect = img.getBoundingClientRect();
     const w = rect.width, h = rect.height;
     const start = { x: (e.clientX - rect.left) / w, y: (e.clientY - rect.top) / h };
     if (start.x < 0 || start.x > 1 || start.y < 0 || start.y > 1) return;
     e.preventDefault();
-    state.activeRunStepId = step.id;
+    if (ctx.onActivate) ctx.onActivate(step);
     step.annotations = step.annotations || [];
+    const repaint = () => paintAnnotations(canvas, img, overlay, step);
+    const save = ctx.save;
 
     if (tool === "hotspot") {
       step.hotspot = { x: clamp01(start.x), y: clamp01(start.y) };
-      touchTestPlan(plan);
-      paintAnnotations(canvas, img, overlay, step);
+      save();
+      repaint();
       return;
     }
     if (tool === "label") {
-      state.pendingLabel = { stepId: step.id, x: start.x, y: start.y };
+      // Set pendingLabel AFTER opening the modal so closeModal() inside
+      // openModal can't clobber it.
       openLabelPrompt();
+      state.pendingLabel = ctx.labelPending(step, start.x, start.y);
       return;
     }
     if (tool === "pin") {
@@ -2580,8 +2753,8 @@ ${sections.join("")}
       const n = (existingPins.length === 0 ? 1
         : Math.max(...existingPins.map((a) => a.n || 0)) + 1);
       step.annotations.push({ id: uid(), type: "pin", x: start.x, y: start.y, n });
-      touchTestPlan(plan);
-      paintAnnotations(canvas, img, overlay, step);
+      save();
+      repaint();
       return;
     }
     if (tool === "box") {
@@ -2592,13 +2765,13 @@ ${sections.join("")}
         ann.y = Math.min(start.y, cy);
         ann.w = Math.abs(cx - start.x);
         ann.h = Math.abs(cy - start.y);
-        paintAnnotations(canvas, img, overlay, step);
+        repaint();
       }, () => {
         if (ann.w < 0.005 || ann.h < 0.005) {
           step.annotations = step.annotations.filter((a) => a.id !== ann.id);
         }
-        touchTestPlan(plan);
-        paintAnnotations(canvas, img, overlay, step);
+        save();
+        repaint();
       });
       return;
     }
@@ -2609,36 +2782,31 @@ ${sections.join("")}
       };
       step.annotations.push(ann);
       dragWith(img, (cx, cy) => {
-        ann.x2 = cx;
-        ann.y2 = cy;
-        paintAnnotations(canvas, img, overlay, step);
+        ann.x2 = cx; ann.y2 = cy;
+        repaint();
       }, () => {
-        const dx = ann.x2 - ann.x1, dy = ann.y2 - ann.y1;
-        if (Math.hypot(dx, dy) < 0.01) {
+        if (Math.hypot(ann.x2 - ann.x1, ann.y2 - ann.y1) < 0.01) {
           step.annotations = step.annotations.filter((a) => a.id !== ann.id);
         }
-        touchTestPlan(plan);
-        paintAnnotations(canvas, img, overlay, step);
+        save();
+        repaint();
       });
       return;
     }
     if (tool === "pen") {
-      const ann = {
-        id: uid(), type: "pen", points: [{ x: start.x, y: start.y }],
-      };
+      const ann = { id: uid(), type: "pen", points: [{ x: start.x, y: start.y }] };
       step.annotations.push(ann);
-      const minDist = 0.005; // sample threshold (image-relative)
       dragWith(img, (cx, cy) => {
         const last = ann.points[ann.points.length - 1];
-        if (Math.hypot(cx - last.x, cy - last.y) < minDist) return;
+        if (Math.hypot(cx - last.x, cy - last.y) < 0.005) return;
         ann.points.push({ x: cx, y: cy });
-        paintAnnotations(canvas, img, overlay, step);
+        repaint();
       }, () => {
         if (ann.points.length < 2) {
           step.annotations = step.annotations.filter((a) => a.id !== ann.id);
         }
-        touchTestPlan(plan);
-        paintAnnotations(canvas, img, overlay, step);
+        save();
+        repaint();
       });
     }
   }
@@ -2679,7 +2847,10 @@ ${sections.join("")}
   }
   function closeModal() {
     if (modalEl) { modalEl.remove(); modalEl = null; }
-    state.pendingLabel = null;
+    // Note: pending* state (pendingLabel, pendingDefect, pendingResolve) is
+    // intentionally NOT cleared here. closeModal is called from openModal()
+    // before a new modal is shown, which would clobber state that the caller
+    // just set. Each save handler clears its own pending state on success.
   }
 
   function openSettings() {
@@ -2727,9 +2898,85 @@ ${sections.join("")}
     openModal("tpl-label-prompt");
   }
 
+  // ---------- Defect raise / resolve ----------
+  function openRaiseDefect(plan, test, run) {
+    openModal("tpl-raise-defect", (root) => {
+      root.querySelector("#raise-context").textContent =
+        `${test.number || "—"} · ${test.name || "Untitled test"} · ${run ? run.environment : plan.activeEnvironment}`;
+      const desc = root.querySelector('[data-bind="defect-desc"]');
+      const id = root.querySelector('[data-bind="defect-id"]');
+      if (run && run.notes) {
+        desc.value = run.notes;
+        // Try to lift a JIRA-style key out of existing notes.
+        const m = run.notes.match(/\b[A-Z][A-Z0-9]+-\d+\b/);
+        if (m) id.value = m[0];
+      }
+    });
+    state.pendingDefect = {
+      planId: plan.id, testId: test.id, runId: run ? run.id : null,
+    };
+  }
+
+  function saveDefect() {
+    if (!modalEl || !state.pendingDefect) { closeModal(); state.pendingDefect = null; return; }
+    const idEl = modalEl.querySelector('[data-bind="defect-id"]');
+    const descEl = modalEl.querySelector('[data-bind="defect-desc"]');
+    const defectId = idEl.value.trim();
+    const desc = descEl.value.trim();
+    if (!defectId) { idEl.focus(); toast("Defect ID is required."); return; }
+    const pending = state.pendingDefect;
+    state.pendingDefect = null;
+    closeModal();
+    const plan = getTestPlan(pending.planId);
+    const test = plan && getTest(plan, pending.testId);
+    if (!plan || !test) return;
+    const run = pending.runId ? getRun(test, pending.runId) : null;
+    test.defects = test.defects || [];
+    test.defects.push(createDefect({
+      defectId,
+      description: desc,
+      environment: run ? run.environment : plan.activeEnvironment,
+      raisedBy: plan.tester || state.settings.tester || "",
+      raisedFromRunId: pending.runId,
+    }));
+    touchTestPlan(plan);
+    renderActiveTest(plan);
+    renderTestList(plan);
+    toast(`Raised ${defectId}.`);
+  }
+
+  function openResolveDefect(plan, test, defect) {
+    openModal("tpl-resolve-defect", (root) => {
+      root.querySelector("#resolve-context").textContent =
+        `${defect.defectId} on ${defect.environment} · ${test.number || "—"} ${test.name || ""}`;
+      root.querySelector('[data-bind="resolve-text"]').value = defect.resolution || "";
+    });
+    state.pendingResolve = { planId: plan.id, testId: test.id, defectId: defect.id };
+  }
+
+  function saveResolution() {
+    if (!modalEl || !state.pendingResolve) { closeModal(); state.pendingResolve = null; return; }
+    const text = modalEl.querySelector('[data-bind="resolve-text"]').value.trim();
+    if (!text) { toast("Please describe the resolution."); return; }
+    const pending = state.pendingResolve;
+    state.pendingResolve = null;
+    closeModal();
+    const plan = getTestPlan(pending.planId);
+    const test = plan && getTest(plan, pending.testId);
+    const defect = test && (test.defects || []).find((d) => d.id === pending.defectId);
+    if (!defect) return;
+    defect.resolution = text;
+    defect.status = "Resolved";
+    defect.resolvedAt = Date.now();
+    defect.resolvedBy = plan.tester || state.settings.tester || "";
+    touchTestPlan(plan);
+    renderActiveTest(plan);
+    toast("Defect marked resolved.");
+  }
+
   // Top-of-modal summary: rolls up active defects by status and priority,
-  // and surfaces recurring failures (tests with 2+ runs in this env), so the
-  // tester can see at a glance what to attack first.
+  // surfaces recurring failures, and counts open vs resolved defect IDs so
+  // the tester can see at a glance what to attack first.
   function buildDefectSummary(plan, env, defects) {
     const counts = {
       Fail: defects.filter(({ run }) => run.status === "Fail").length,
@@ -2742,6 +2989,11 @@ ${sections.join("")}
     });
     const recurring = defects.filter(({ test }) =>
       (test.runs || []).filter((r) => r.environment === env).length >= 2);
+    // Roll up actual defect IDs across all tests in this env.
+    const allDefects = plan.tests.flatMap((t) =>
+      (t.defects || []).filter((d) => d.environment === env));
+    const openIds = allDefects.filter((d) => d.status === "Open").length;
+    const resolvedIds = allDefects.filter((d) => d.status === "Resolved").length;
 
     const card = document.createElement("div");
     card.className = "defect-summary";
@@ -2751,9 +3003,14 @@ ${sections.join("")}
       .join("");
     card.innerHTML = `
       <div class="summary-row summary-counts">
-        <span class="summary-headline">${defects.length} active defect${defects.length === 1 ? "" : "s"} on ${escapeHtml(env)}</span>
+        <span class="summary-headline">${defects.length} failing test${defects.length === 1 ? "" : "s"} on ${escapeHtml(env)}</span>
         <span class="status-pill status-Fail">${counts.Fail} Failed</span>
         <span class="status-pill status-Blocked">${counts.Blocked} Blocked</span>
+      </div>
+      <div class="summary-row summary-counts">
+        <span class="summary-label">Defect IDs</span>
+        <span class="summary-pill summary-open">${openIds} open</span>
+        <span class="summary-pill summary-resolved">${resolvedIds} resolved</span>
       </div>
       <div class="summary-row">
         <span class="summary-label">By priority</span>
@@ -2848,20 +3105,31 @@ ${sections.join("")}
     });
   }
   function saveLabel() {
-    if (!modalEl || !state.pendingLabel) { closeModal(); return; }
+    if (!modalEl || !state.pendingLabel) { closeModal(); state.pendingLabel = null; return; }
     const text = modalEl.querySelector('[data-bind="label-text"]').value.trim();
-    const { stepId, x, y } = state.pendingLabel;
+    const pending = state.pendingLabel;
+    state.pendingLabel = null;
     closeModal();
     if (!text) return;
-    const plan = getTestPlan(state.activeTestPlanId);
-    const test = plan && getTest(plan, state.activeTestId);
-    const run = test && getRun(test, state.activeRunId);
-    const step = run && getRunStep(run, stepId);
-    if (!step) return;
-    step.annotations = step.annotations || [];
-    step.annotations.push({ id: uid(), type: "label", x, y, text });
-    touchTestPlan(plan);
-    renderRunSteps(plan, test, run);
+    if (pending.kind === "guide") {
+      const guide = getGuide(pending.guideId);
+      const step = guide && getStep(guide, pending.stepId);
+      if (!step) return;
+      step.annotations = step.annotations || [];
+      step.annotations.push({ id: uid(), type: "label", x: pending.x, y: pending.y, text });
+      touchGuide(guide);
+      renderActiveStep(guide);
+    } else {
+      const plan = getTestPlan(state.activeTestPlanId);
+      const test = plan && getTest(plan, state.activeTestId);
+      const run = test && getRun(test, state.activeRunId);
+      const step = run && getRunStep(run, pending.stepId);
+      if (!step) return;
+      step.annotations = step.annotations || [];
+      step.annotations.push({ id: uid(), type: "label", x: pending.x, y: pending.y, text });
+      touchTestPlan(plan);
+      renderRunSteps(plan, test, run);
+    }
   }
 
   // ---------- Paste-to-capture (default capture mode) ----------
@@ -3136,6 +3404,11 @@ ${sections.join("")}
       case "save-settings": saveSettingsFromModal(); break;
       case "close-modal": closeModal(); break;
       case "save-label": saveLabel(); break;
+      case "save-defect": saveDefect(); break;
+      case "save-resolution": saveResolution(); break;
+      case "raise-defect":
+        if (plan && test) openRaiseDefect(plan, test, run);
+        break;
 
       case "add-step": if (guide) addStep(guide); break;
       case "upload-screenshot":
@@ -3146,7 +3419,7 @@ ${sections.join("")}
         if (step) {
           step.hotspot = null;
           touchGuide(guide);
-          positionHotspot(step);
+          renderActiveStep(guide);
         }
         break;
       case "export-guide": exportGuide(); break;
@@ -3290,7 +3563,12 @@ ${sections.join("")}
     if (state.view === "editor") {
       const guide = getGuide(state.activeGuideId);
       const step = guide && getStep(guide, state.activeStepId);
-      if (step) positionHotspot(step);
+      const img = $("#canvas-img");
+      const overlay = $("#canvas-overlay");
+      const canvas = $("#canvas");
+      if (step && img && overlay && canvas) {
+        paintAnnotations(canvas, img, overlay, step);
+      }
     }
   });
 

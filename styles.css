@@ -1177,6 +1177,72 @@ select.meta-input {
 .env-pill.status-Fail .env-pill-status { color: #f08278; }
 .env-pill.status-Blocked .env-pill-status { color: var(--accent); }
 
+/* In-app per-test defects panel */
+.test-defects {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.test-defects[hidden] { display: none; }
+.test-defects-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.test-defects-head h3 { margin: 0; font-size: 14px; }
+.test-defects-list { display: flex; flex-direction: column; gap: 8px; }
+.defect-item {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.defect-item.defect-Resolved { opacity: 0.85; }
+.defect-item-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.defect-item-id {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text);
+}
+.defect-actions { margin-left: auto; }
+.defect-item-desc {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+.defect-item-resolution {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+  font-size: 13px;
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+.defect-item-resolution strong { color: #5cd07b; }
+
+.summary-open {
+  background: rgba(226, 85, 75, 0.18);
+  color: #f08278;
+  border-color: rgba(226, 85, 75, 0.4);
+}
+.summary-resolved {
+  background: rgba(58, 168, 92, 0.18);
+  color: #5cd07b;
+  border-color: rgba(58, 168, 92, 0.4);
+}
+
 /* Defects modal */
 .modal-lg { width: 760px; max-width: 100%; }
 #defects-body {

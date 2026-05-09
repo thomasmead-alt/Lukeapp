@@ -115,6 +115,14 @@
         <div class="test-meta-grid"></div>
       </header>
 
+      <section class="test-defects" id="test-defects" hidden>
+        <header class="test-defects-head">
+          <h3>Defects</h3>
+          <span class="muted-count" id="test-defects-summary"></span>
+        </header>
+        <div class="test-defects-list" id="test-defects-list"></div>
+      </section>
+
       <div class="run-card" id="run-card">
         <div class="run-card-header">
           <div>
@@ -122,6 +130,7 @@
             <span class="run-when muted-count"></span>
           </div>
           <div class="run-actions">
+            <button class="btn btn-ghost btn-sm" data-action="raise-defect">&#9888; Raise defect</button>
             <button class="btn btn-ghost btn-sm" data-action="new-run">New run</button>
             <button class="btn btn-ghost btn-sm" data-action="export-test-pdf">Evidence PDF</button>
             <button class="btn btn-ghost btn-sm" data-action="export-test-word">Evidence Word</button>
@@ -247,6 +256,54 @@
     </div>
   </template>
 
+  <template id="tpl-raise-defect">
+    <div class="modal-backdrop">
+      <div class="modal" role="dialog" aria-modal="true">
+        <header class="modal-header">
+          <h2>Raise defect</h2>
+          <button class="icon-btn" data-action="close-modal">&times;</button>
+        </header>
+        <div class="modal-body">
+          <p class="muted-count" id="raise-context"></p>
+          <label class="field">
+            <span>Defect ID</span>
+            <input class="meta-input" data-bind="defect-id" placeholder="JIRA-1234" autofocus />
+          </label>
+          <label class="field">
+            <span>Description (optional)</span>
+            <textarea class="meta-input" data-bind="defect-desc" rows="4" placeholder="What broke?"></textarea>
+          </label>
+        </div>
+        <footer class="modal-footer">
+          <button class="btn btn-ghost" data-action="close-modal">Cancel</button>
+          <button class="btn btn-primary" data-action="save-defect">Raise</button>
+        </footer>
+      </div>
+    </div>
+  </template>
+
+  <template id="tpl-resolve-defect">
+    <div class="modal-backdrop">
+      <div class="modal" role="dialog" aria-modal="true">
+        <header class="modal-header">
+          <h2>Mark defect resolved</h2>
+          <button class="icon-btn" data-action="close-modal">&times;</button>
+        </header>
+        <div class="modal-body">
+          <p class="muted-count" id="resolve-context"></p>
+          <label class="field">
+            <span>Resolution</span>
+            <textarea class="meta-input" data-bind="resolve-text" rows="5" placeholder="How was it fixed?" autofocus></textarea>
+          </label>
+        </div>
+        <footer class="modal-footer">
+          <button class="btn btn-ghost" data-action="close-modal">Cancel</button>
+          <button class="btn btn-primary" data-action="save-resolution">Mark resolved</button>
+        </footer>
+      </div>
+    </div>
+  </template>
+
   <template id="tpl-label-prompt">
     <div class="modal-backdrop">
       <div class="modal modal-sm" role="dialog" aria-modal="true">
@@ -311,20 +368,24 @@
     <div class="step-editor">
       <div class="step-toolbar">
         <input class="step-title" data-bind="step-title" placeholder="Step title" />
+        <div class="run-step-tools" id="guide-tools">
+          <button class="tool-btn" data-tool="hotspot" title="Click hotspot">&#9737;</button>
+          <button class="tool-btn" data-tool="box" title="Box">&#9633;</button>
+          <button class="tool-btn" data-tool="arrow" title="Arrow">&#8599;</button>
+          <button class="tool-btn" data-tool="pin" title="Numbered pin">&#9450;</button>
+          <button class="tool-btn" data-tool="pen" title="Free-hand pen">&#9998;</button>
+          <button class="tool-btn" data-tool="label" title="Label">A</button>
+        </div>
         <div class="step-toolbar-actions">
           <button class="btn btn-ghost btn-sm" data-action="replace-screenshot">Replace image</button>
-          <button class="btn btn-ghost btn-sm" data-action="clear-hotspot">Clear hotspot</button>
         </div>
       </div>
       <div class="canvas-wrap">
         <div class="canvas" id="canvas">
           <img class="canvas-img" id="canvas-img" alt="" />
-          <div class="hotspot" id="hotspot" hidden>
-            <span class="hotspot-pulse"></span>
-            <span class="hotspot-dot"></span>
-          </div>
+          <div class="run-overlay" id="canvas-overlay"></div>
         </div>
-        <p class="canvas-hint">Click the screenshot to place or move the hotspot.</p>
+        <p class="canvas-hint" id="canvas-hint"></p>
       </div>
       <textarea class="step-instruction" data-bind="step-instruction" placeholder="Tell the learner what to do at this step..."></textarea>
     </div>
