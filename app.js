@@ -166,6 +166,115 @@
 
   function saveSettings() { safeWrite(SETTINGS_KEY, JSON.stringify(state.settings)); }
 
+  // ---------- IndexedDB image store ----------
+  // Screenshots are big (a 300KB JPEG x 50 steps already pushes localStorage's
+  // ~5-10MB cap). We keep small metadata in localStorage for fast sync reads
+  // and put the image blobs in IndexedDB, which has GB-class quotas. Each step
+  // stores an `imageId` referencing the IDB row instead of an inline data URL.
+  const IDB_NAME = "clickguide";
+  const IDB_VERSION = 1;
+  const IDB_STORE_IMAGES = "images";
+
+  const idb = {
+    available: false,
+    db: null,
+    reason: "",
+  };
+  // Synchronous-access cache populated during boot and on every put. Render
+  // paths can read images from here without going async; if a key is missing
+  // the placeholder is shown until preloadImages() finishes.
+  const imageCache = new Map();
+
+  function openImageDb() {
+    return new Promise((resolve, reject) => {
+      if (typeof indexedDB === "undefined") {
+        return reject(new Error("IndexedDB API not available"));
+      }
+      const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE_IMAGES)) {
+          db.createObjectStore(IDB_STORE_IMAGES);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error("IDB open failed"));
+      req.onblocked = () => reject(new Error("IDB open blocked"));
+    });
+  }
+
+  async function imagePut(id, dataUrl) {
+    if (!idb.available || !idb.db) throw new Error("Image store unavailable");
+    return new Promise((resolve, reject) => {
+      const tx = idb.db.transaction(IDB_STORE_IMAGES, "readwrite");
+      tx.objectStore(IDB_STORE_IMAGES).put(dataUrl, id);
+      tx.oncomplete = () => { imageCache.set(id, dataUrl); resolve(); };
+      tx.onerror = () => reject(tx.error || new Error("IDB put failed"));
+      tx.onabort = () => reject(tx.error || new Error("IDB put aborted"));
+    });
+  }
+
+  async function imageGet(id) {
+    if (!id) return null;
+    if (imageCache.has(id)) return imageCache.get(id);
+    if (!idb.available || !idb.db) return null;
+    return new Promise((resolve, reject) => {
+      const tx = idb.db.transaction(IDB_STORE_IMAGES, "readonly");
+      const req = tx.objectStore(IDB_STORE_IMAGES).get(id);
+      req.onsuccess = () => {
+        if (req.result) imageCache.set(id, req.result);
+        resolve(req.result || null);
+      };
+      req.onerror = () => reject(req.error || new Error("IDB get failed"));
+    });
+  }
+
+  async function imageDelete(ids) {
+    if (!idb.available || !idb.db) return;
+    const list = (Array.isArray(ids) ? ids : [ids]).filter(Boolean);
+    if (!list.length) return;
+    return new Promise((resolve) => {
+      const tx = idb.db.transaction(IDB_STORE_IMAGES, "readwrite");
+      const store = tx.objectStore(IDB_STORE_IMAGES);
+      list.forEach((id) => { store.delete(id); imageCache.delete(id); });
+      tx.oncomplete = () => resolve();
+      // Don't reject on delete errors — we don't want a stuck transaction to
+      // block the user's work. Worst case: a tiny orphan remains until next GC.
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    });
+  }
+
+  async function imageGetAllKeys() {
+    if (!idb.available || !idb.db) return [];
+    return new Promise((resolve, reject) => {
+      const tx = idb.db.transaction(IDB_STORE_IMAGES, "readonly");
+      const req = tx.objectStore(IDB_STORE_IMAGES).getAllKeys();
+      req.onsuccess = () => resolve(Array.from(req.result || []));
+      req.onerror = () => reject(req.error || new Error("IDB list failed"));
+    });
+  }
+
+  function resolveImage(step) {
+    if (!step) return null;
+    if (step.imageId) return imageCache.get(step.imageId) || null;
+    return step.image || null; // legacy field, pre-migration
+  }
+
+  function collectImageIds(...containers) {
+    const ids = [];
+    const visit = (step) => { if (step && step.imageId) ids.push(step.imageId); };
+    for (const c of containers) {
+      if (!c) continue;
+      if (Array.isArray(c.steps)) c.steps.forEach(visit);
+      if (Array.isArray(c.tests)) {
+        c.tests.forEach((t) => (t.runs || []).forEach((r) => (r.steps || []).forEach(visit)));
+      }
+      if (Array.isArray(c.runs)) c.runs.forEach((r) => (r.steps || []).forEach(visit));
+    }
+    return ids;
+  }
+
   // ---------- Models ----------
   function createGuide() {
     return {
@@ -183,7 +292,7 @@
       id: uid(),
       title: "",
       instruction: "",
-      image: null,           // data URL
+      imageId: null,         // IndexedDB key; load via resolveImage(step)
       hotspot: null,         // { x: 0..1, y: 0..1 } in image-relative coordinates
     };
   }
@@ -239,7 +348,7 @@
       id: uid(),
       title: "",
       instruction: "",
-      image: null,
+      imageId: null,         // IndexedDB key; load via resolveImage(step)
       hotspot: null,
       annotations: [],
     };
@@ -462,7 +571,8 @@
       return;
     }
 
-    if (!step.image) {
+    const stepImage = resolveImage(step);
+    if (!stepImage) {
       const empty = tpl("tpl-step-empty");
       const wrap = empty.querySelector(".step-empty");
       wrap.addEventListener("dragover", (e) => {
@@ -499,7 +609,7 @@
 
     const img = $("#canvas-img");
     img.addEventListener("load", () => positionHotspot(step), { once: true });
-    img.src = step.image;
+    img.src = stepImage;
     if (img.complete && img.naturalWidth) positionHotspot(step);
 
     const canvas = $("#canvas");
@@ -550,7 +660,8 @@
     const stage = $("#player-stage");
     stage.replaceChildren();
 
-    if (!step.image) {
+    const playerImage = resolveImage(step);
+    if (!playerImage) {
       const empty = document.createElement("div");
       empty.className = "player-empty";
       empty.textContent = "This step has no screenshot yet.";
@@ -575,7 +686,7 @@
       canvas.appendChild(img);
       canvas.appendChild(hot);
       stage.appendChild(canvas);
-      img.src = step.image;
+      img.src = playerImage;
       if (img.complete && img.naturalWidth) place();
     }
 
@@ -940,14 +1051,15 @@
       const overlay = root.querySelector(".run-overlay");
       const canvas = root.querySelector(".run-canvas");
       const hint = root.querySelector(".canvas-hint");
-      hint.textContent = step.image
+      const stepImg = resolveImage(step);
+      hint.textContent = stepImg
         ? toolHint(state.activeRunStepId === step.id ? state.annotationTool : "hotspot")
         : "";
 
-      if (step.image) {
+      if (stepImg) {
         const place = () => paintAnnotations(canvas, img, overlay, step);
         img.addEventListener("load", place);
-        img.src = step.image;
+        img.src = stepImg;
         if (img.complete && img.naturalWidth) place();
 
         canvas.addEventListener("mousedown", (e) => {
@@ -1027,7 +1139,8 @@
       row.querySelector('[data-act="del"]').addEventListener("click", () => {
         if (!confirm("Delete this run? Evidence will be lost.")) return;
         const idx = test.runs.findIndex((x) => x.id === r.id);
-        test.runs.splice(idx, 1);
+        const [removed] = test.runs.splice(idx, 1);
+        if (removed) imageDelete(collectImageIds({ runs: [removed] }));
         touchTestPlan(plan);
         renderActiveTest(plan);
         renderTestList(plan);
@@ -1062,7 +1175,9 @@
 
   function deleteRunStep(plan, test, run, stepId) {
     if (!confirm("Delete this step?")) return;
+    const removed = run.steps.find((s) => s.id === stepId);
     run.steps = run.steps.filter((s) => s.id !== stepId);
+    if (removed && removed.imageId) imageDelete(removed.imageId);
     touchTestPlan(plan);
     renderRunSteps(plan, test, run);
   }
@@ -1092,6 +1207,7 @@
     const plan = getTestPlan(state.activeTestPlanId);
     if (!plan) return;
     if (!confirm(`Delete "${plan.title || "this test plan"}"? This cannot be undone.`)) return;
+    imageDelete(collectImageIds(plan));
     state.testplans = state.testplans.filter((p) => p.id !== plan.id);
     saveTestPlans();
     goHome();
@@ -1115,7 +1231,8 @@
     }
     if (!confirm("Delete this step?")) return;
     const idx = guide.steps.findIndex((s) => s.id === stepId);
-    guide.steps.splice(idx, 1);
+    const [removed] = guide.steps.splice(idx, 1);
+    if (removed && removed.imageId) imageDelete(removed.imageId);
     if (state.activeStepId === stepId) {
       state.activeStepId = guide.steps[Math.max(0, idx - 1)].id;
     }
@@ -1137,15 +1254,17 @@
     const guide = getGuide(state.activeGuideId);
     if (!guide) return;
     if (!confirm(`Delete "${guide.title || "this guide"}"? This cannot be undone.`)) return;
+    imageDelete(collectImageIds(guide));
     state.guides = state.guides.filter((g) => g.id !== guide.id);
     save();
     goHome();
   }
 
-  function exportGuide() {
+  async function exportGuide() {
     const guide = getGuide(state.activeGuideId);
     if (!guide) return;
-    const blob = new Blob([JSON.stringify(guide, null, 2)], { type: "application/json" });
+    const portable = await inlineImagesForExport(guide);
+    const blob = new Blob([JSON.stringify(portable, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     const safeTitle = (guide.title || "guide").replace(/[^a-z0-9_-]+/gi, "-").toLowerCase();
@@ -1154,6 +1273,33 @@
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     toast("Exported.");
+  }
+
+  // Deep-clone a guide / plan and replace every `imageId` with an inline
+  // `image` data URL pulled from IDB, so the resulting JSON is self-contained
+  // and can be imported on any other device.
+  async function inlineImagesForExport(obj) {
+    const clone = JSON.parse(JSON.stringify(obj));
+    const visit = async (step) => {
+      if (step.imageId) {
+        try {
+          const url = await imageGet(step.imageId);
+          if (url) step.image = url;
+        } catch (_) {}
+        delete step.imageId;
+      }
+    };
+    if (Array.isArray(clone.steps)) {
+      for (const s of clone.steps) await visit(s);
+    }
+    if (Array.isArray(clone.tests)) {
+      for (const t of clone.tests) {
+        for (const r of (t.runs || [])) {
+          for (const s of (r.steps || [])) await visit(s);
+        }
+      }
+    }
+    return clone;
   }
 
   function importGuide() {
@@ -1168,17 +1314,24 @@
 
       if (data.kind === "testplan" && Array.isArray(data.tests)) {
         data.id = uid();
-        data.tests = data.tests.map((t) => ({
-          ...createTest(),
-          ...t,
-          id: uid(),
-          runs: (t.runs || []).map((r) => ({
-            ...createRun(r.environment || "DEV", r.tester || ""),
-            ...r,
-            id: uid(),
-            steps: (r.steps || []).map((s) => ({ ...createRunStep(), ...s, id: uid() })),
-          })),
-        }));
+        const newTests = [];
+        for (const t of data.tests) {
+          const newRuns = [];
+          for (const r of (t.runs || [])) {
+            const newSteps = [];
+            for (const s of (r.steps || [])) {
+              newSteps.push(await rehomeImportedStep({ ...createRunStep(), ...s, id: uid() }));
+            }
+            newRuns.push({
+              ...createRun(r.environment || "DEV", r.tester || ""),
+              ...r,
+              id: uid(),
+              steps: newSteps,
+            });
+          }
+          newTests.push({ ...createTest(), ...t, id: uid(), runs: newRuns });
+        }
+        data.tests = newTests;
         data.createdAt = data.createdAt || Date.now();
         data.updatedAt = Date.now();
         if (!Array.isArray(data.environments) || !data.environments.length) {
@@ -1193,7 +1346,11 @@
 
       if (Array.isArray(data.steps)) {
         data.id = uid();
-        data.steps = data.steps.map((s) => ({ ...createStep(), ...s, id: uid() }));
+        const newSteps = [];
+        for (const s of data.steps) {
+          newSteps.push(await rehomeImportedStep({ ...createStep(), ...s, id: uid() }));
+        }
+        data.steps = newSteps;
         data.createdAt = data.createdAt || Date.now();
         data.updatedAt = Date.now();
         state.guides.push(data);
@@ -1208,6 +1365,34 @@
       console.error(e);
       toast("Couldn't import: " + e.message);
     }
+  }
+
+  // Imports may carry inline `image` data URLs (legacy), or `imageId`s that
+  // collide with another install's IDs. Either way, allocate a fresh row in
+  // our IDB so the import is self-contained.
+  async function rehomeImportedStep(step) {
+    const dataUrl = step.image || (step.imageId ? null : null);
+    step.image = null;
+    if (!dataUrl) {
+      // No inline image. If imageId is set but no row exists locally, drop it.
+      step.imageId = null;
+      return step;
+    }
+    if (idb.available) {
+      const id = uid();
+      try {
+        await imagePut(id, dataUrl);
+        step.imageId = id;
+      } catch (e) {
+        // Fall back to inline so the import still works in-memory.
+        step.image = dataUrl;
+        step.imageId = null;
+      }
+    } else {
+      step.image = dataUrl;
+      step.imageId = null;
+    }
+    return step;
   }
 
   // ---------- Screenshot upload ----------
@@ -1225,7 +1410,8 @@
     }
     const reader = new FileReader();
     reader.onload = async () => {
-      step.image = await compressScreenshot(reader.result);
+      const dataUrl = await compressScreenshot(reader.result);
+      await assignStepImage(step, dataUrl);
       step.hotspot = null;
       touchGuide(guide);
       renderActiveStep(guide);
@@ -1308,7 +1494,32 @@
     });
   }
 
-  // Downsize + recompress to keep localStorage usage manageable. PNG screenshots
+  // Write a screenshot to IDB and update the step to point at it. Cleans up
+  // the previous image row if the step was already attached to one.
+  async function assignStepImage(step, dataUrl) {
+    if (!dataUrl) return;
+    const oldId = step.imageId;
+    const newId = uid();
+    try {
+      await imagePut(newId, dataUrl);
+      step.imageId = newId;
+      step.image = null; // clear legacy field, if any
+      if (oldId && oldId !== newId) imageDelete(oldId);
+    } catch (e) {
+      // IDB unavailable (private mode in some browsers, etc.). Fall back to
+      // the inline data URL so the user doesn't lose their capture, and
+      // surface a banner so they know it's only in-memory.
+      console.warn("IDB write failed, falling back to inline image", e);
+      step.imageId = null;
+      step.image = dataUrl;
+      if (!storage.warned) {
+        storage.warned = true;
+        showStorageBanner("Screenshot storage (IndexedDB) couldn't be used. Screenshots are kept in memory and won't survive a refresh.");
+      }
+    }
+  }
+
+  // Downsize + recompress to keep storage usage manageable. PNG screenshots
   // can be 5-10MB each; this typically gets them under 300KB.
   async function compressScreenshot(dataUrl, opts = {}) {
     const { maxDim = 1600, quality = 0.85, type = "image/jpeg" } = opts;
@@ -1337,8 +1548,9 @@
   // Burn the hotspot and annotations directly onto a copy of the screenshot so
   // they survive in any output format (print, .doc, etc.).
   async function composeStepImage(step) {
-    if (!step.image) return null;
-    const img = await loadImage(step.image);
+    const src = step.imageId ? await imageGet(step.imageId) : (step.image || null);
+    if (!src) return null;
+    const img = await loadImage(src);
     const canvas = document.createElement("canvas");
     canvas.width = img.naturalWidth;
     canvas.height = img.naturalHeight;
@@ -1897,7 +2109,8 @@ ${sections.join("")}
       if (format === "pdf") printHtmlToPdf(html, "Preparing plan PDF...");
       else if (format === "word") downloadHtmlAsWord(html, `${base}.doc`);
       else if (format === "json") {
-        const blob = new Blob([JSON.stringify(plan, null, 2)], { type: "application/json" });
+        const portable = await inlineImagesForExport(plan);
+        const blob = new Blob([JSON.stringify(portable, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url; a.download = `${base}.testplan.json`;
@@ -1976,13 +2189,13 @@ ${sections.join("")}
       if (!plan || !test || !run) return;
       let step;
       const last = run.steps[run.steps.length - 1];
-      if (last && !last.image && !last.title && !last.instruction) {
+      if (last && !stepHasImage(last) && !last.title && !last.instruction) {
         step = last;
       } else {
         step = createRunStep();
         run.steps.push(step);
       }
-      step.image = dataUrl;
+      await assignStepImage(step, dataUrl);
       step.hotspot = null;
       step.annotations = [];
       capture.count++;
@@ -1993,20 +2206,24 @@ ${sections.join("")}
       let step;
       const last = guide.steps[guide.steps.length - 1];
       if (
-        guide.steps.length === 1 && !last.image && !last.title && !last.instruction
+        guide.steps.length === 1 && !stepHasImage(last) && !last.title && !last.instruction
       ) {
         step = last;
       } else {
         step = createStep();
         guide.steps.push(step);
       }
-      step.image = dataUrl;
+      await assignStepImage(step, dataUrl);
       step.hotspot = null;
       capture.count++;
       touchGuide(guide);
     }
     flashCapturePanel();
     updateCapturePanelCount();
+  }
+
+  function stepHasImage(step) {
+    return !!(step && (step.imageId || step.image));
   }
 
   function captureHotkey(e) {
@@ -2182,7 +2399,7 @@ ${sections.join("")}
 
   function paintAnnotations(canvas, img, overlay, step) {
     overlay.replaceChildren();
-    if (!step.image) return;
+    if (!stepHasImage(step)) return;
     const w = img.clientWidth, h = img.clientHeight;
     if (!w || !h) return;
     overlay.style.width = w + "px";
@@ -2286,7 +2503,7 @@ ${sections.join("")}
   }
 
   function startAnnotationGesture(e, plan, test, run, step, canvas, img, overlay) {
-    if (!step.image || !img.clientWidth) return;
+    if (!stepHasImage(step) || !img.clientWidth) return;
     const tool = state.activeRunStepId === step.id ? state.annotationTool : "hotspot";
     const rect = img.getBoundingClientRect();
     const w = rect.width, h = rect.height;
@@ -2567,7 +2784,7 @@ ${sections.join("")}
     reader.readAsDataURL(file);
   }
 
-  function addPastedStep(dataUrl) {
+  async function addPastedStep(dataUrl) {
     const target = pasteCapture.resolveTarget && pasteCapture.resolveTarget();
     if (!target) return;
     if (pasteCapture.contextKind === "run") {
@@ -2575,13 +2792,13 @@ ${sections.join("")}
       if (!plan || !test || !run) return;
       let step;
       const last = run.steps[run.steps.length - 1];
-      if (last && !last.image && !last.title && !last.instruction) {
+      if (last && !stepHasImage(last) && !last.title && !last.instruction) {
         step = last;
       } else {
         step = createRunStep();
         run.steps.push(step);
       }
-      step.image = dataUrl;
+      await assignStepImage(step, dataUrl);
       step.hotspot = null;
       step.annotations = [];
       pasteCapture.count++;
@@ -2597,14 +2814,14 @@ ${sections.join("")}
       let step;
       const last = guide.steps[guide.steps.length - 1];
       if (
-        guide.steps.length === 1 && !last.image && !last.title && !last.instruction
+        guide.steps.length === 1 && !stepHasImage(last) && !last.title && !last.instruction
       ) {
         step = last;
       } else {
         step = createStep();
         guide.steps.push(step);
       }
-      step.image = dataUrl;
+      await assignStepImage(step, dataUrl);
       step.hotspot = null;
       pasteCapture.count++;
       touchGuide(guide);
@@ -2862,7 +3079,8 @@ ${sections.join("")}
     }
     const reader = new FileReader();
     reader.onload = async () => {
-      step.image = await compressScreenshot(reader.result);
+      const dataUrl = await compressScreenshot(reader.result);
+      await assignStepImage(step, dataUrl);
       step.hotspot = null;
       step.annotations = [];
       touchTestPlan(plan);
@@ -2904,14 +3122,104 @@ ${sections.join("")}
   });
 
   // ---------- Boot ----------
-  probeStorage();
-  if (!storage.available) {
-    storage.warned = true;
-    showStorageBanner(storage.reason);
+  async function bootstrap() {
+    probeStorage();
+    if (!storage.available) {
+      storage.warned = true;
+      showStorageBanner(storage.reason);
+    }
+    state.guides = load();
+    state.testplans = loadTestPlans();
+    const savedSettings = loadSettings();
+    if (savedSettings) state.settings = savedSettings;
+
+    // Open IndexedDB. Failure here doesn't block boot — we render with
+    // whatever's available and warn the user. Steps with legacy inline
+    // data URLs still work because resolveImage falls through to step.image.
+    try {
+      idb.db = await openImageDb();
+      idb.available = true;
+    } catch (e) {
+      console.warn("IndexedDB unavailable:", e);
+      idb.available = false;
+      idb.reason = describeStorageError(e);
+      if (!storage.warned) {
+        storage.warned = true;
+        showStorageBanner("Image storage (IndexedDB) is unavailable. Screenshots will be kept in memory only this session.");
+      }
+    }
+
+    // Render quickly with no images, then migrate + preload in the background.
+    render();
+
+    if (idb.available) {
+      try {
+        await migrateLegacyImages();
+        await preloadImages();
+        // Re-render so any cached images now appear.
+        render();
+        // Drop orphaned image rows that nothing references.
+        gcOrphanImages();
+      } catch (e) {
+        console.warn("Image migration/preload failed", e);
+      }
+    }
   }
-  state.guides = load();
-  state.testplans = loadTestPlans();
-  const savedSettings = loadSettings();
-  if (savedSettings) state.settings = savedSettings;
-  render();
+
+  // Walk every step in localStorage; if it has a legacy `image` data URL but
+  // no `imageId`, write the data URL to IDB and replace the field.
+  async function migrateLegacyImages() {
+    let migrated = 0;
+    const guideSteps = (g) => g.steps || [];
+    const planSteps = (p) => (p.tests || []).flatMap(
+      (t) => (t.runs || []).flatMap((r) => r.steps || []));
+    const allSteps = [
+      ...state.guides.flatMap(guideSteps),
+      ...state.testplans.flatMap(planSteps),
+    ];
+    for (const step of allSteps) {
+      if (step.image && !step.imageId) {
+        const id = uid();
+        try {
+          await imagePut(id, step.image);
+          step.imageId = id;
+          step.image = null;
+          migrated++;
+        } catch (e) {
+          console.warn("Migrate failed for one image", e);
+          break; // bail out if IDB is broken; leave remaining as legacy
+        }
+      }
+    }
+    if (migrated > 0) {
+      save();
+      saveTestPlans();
+      console.log(`Migrated ${migrated} screenshot(s) to IndexedDB.`);
+    }
+  }
+
+  // Pull every referenced image into the in-memory cache so render paths
+  // can read them synchronously.
+  async function preloadImages() {
+    const ids = new Set();
+    state.guides.forEach((g) => collectImageIds(g).forEach((id) => ids.add(id)));
+    state.testplans.forEach((p) => collectImageIds(p).forEach((id) => ids.add(id)));
+    await Promise.all(Array.from(ids).map((id) => imageGet(id).catch(() => null)));
+  }
+
+  // Remove image rows that no step references. Keeps quota usage tight.
+  async function gcOrphanImages() {
+    try {
+      const referenced = new Set();
+      state.guides.forEach((g) => collectImageIds(g).forEach((id) => referenced.add(id)));
+      state.testplans.forEach((p) => collectImageIds(p).forEach((id) => referenced.add(id)));
+      const all = await imageGetAllKeys();
+      const orphans = all.filter((id) => !referenced.has(id));
+      if (orphans.length) await imageDelete(orphans);
+    } catch (e) {
+      console.warn("orphan GC failed", e);
+    }
+  }
+
+  bootstrap();
 })();

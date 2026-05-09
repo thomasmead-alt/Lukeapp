@@ -181,8 +181,21 @@ Screen recording works in current Chrome, Edge, Firefox, and Safari (macOS 13+),
 
 All hotspot/box/label coordinates are normalized to `[0, 1]` relative to the screenshot, so they stay anchored when the image is rendered at different sizes.
 
+## Storage
+
+ClickGuide uses two browser storage APIs:
+
+- **localStorage** — small metadata (titles, notes, hotspot coords, status, etc). Sync access; capped at ~5–10 MB per origin in most browsers.
+- **IndexedDB** — screenshot blobs. Multi-GB quota (typically up to 50 % of free disk). Each step records an `imageId` referencing a row in the `clickguide` IDB database; the actual JPEG/PNG data stays out of the metadata.
+
+On first load with data from an older release, ClickGuide migrates legacy inline `image` data URLs into IndexedDB automatically and rewrites the localStorage entries. After migration the metadata blob is tiny (numbers, strings, `imageId` keys), so localStorage stays well under quota.
+
+The storage banner at the top of the page surfaces failures (full quota, blocked origin, IndexedDB disabled in private mode, etc.) so it's clear when work won't survive a refresh.
+
+JSON exports are self-contained: when you click **Export JSON**, ClickGuide pulls each referenced image out of IDB and inlines it as a data URL on the way out, so the file can be re-imported on any other device or browser.
+
 ## Notes & limitations
 
-- Screenshots are stored as data URLs in `localStorage`. Browsers typically cap that around 5–10 MB per origin — large plans or long runs may hit the quota. Use JSON export for backup.
-- One click hotspot per step is intentional; the box/label tools cover everything else.
+- One click hotspot per step is intentional; the box / arrow / pin / pen / label tools cover everything else.
 - Captured frames don't track the OS cursor automatically — drop hotspots after capture.
+- IndexedDB on Firefox can be restricted on `file://` origins. Run via a local static server (e.g. `python3 -m http.server`) for the most consistent experience.
