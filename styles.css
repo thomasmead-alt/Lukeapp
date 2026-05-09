@@ -698,10 +698,31 @@ select.meta-input {
   gap: 8px;
   align-items: center;
 }
-.test-attempts {
-  font-family: var(--mono);
-  font-size: 11px;
+.env-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  justify-content: flex-end;
+  max-width: 110px;
+}
+.env-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: var(--bg);
   color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.env-mini.status-Pass { background: rgba(58, 168, 92, 0.12); color: #5cd07b; border-color: rgba(58, 168, 92, 0.4); }
+.env-mini.status-Fail { background: rgba(226, 85, 75, 0.12); color: #f08278; border-color: rgba(226, 85, 75, 0.4); }
+.env-mini.status-Blocked { background: rgba(255, 182, 72, 0.14); color: var(--accent); border-color: rgba(255, 182, 72, 0.4); }
+.env-mini-count {
+  font-weight: 700;
 }
 .step-list .step-item {
   display: grid;
@@ -1165,6 +1186,59 @@ select.meta-input {
   max-height: 60vh;
   overflow-y: auto;
   padding: 8px;
+}
+.defect-summary {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.summary-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.summary-counts { gap: 10px; }
+.summary-headline {
+  font-weight: 600;
+  color: var(--text);
+  margin-right: auto;
+}
+.summary-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  min-width: 80px;
+}
+.summary-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.summary-pill {
+  background: var(--surface-2);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.summary-link {
+  background: rgba(226, 85, 75, 0.12);
+  color: #f08278;
+  border: 1px solid rgba(226, 85, 75, 0.4);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.summary-link:hover {
+  background: rgba(226, 85, 75, 0.2);
+  border-color: var(--danger);
 }
 .defects-empty {
   padding: 32px;

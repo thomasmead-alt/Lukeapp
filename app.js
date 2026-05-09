@@ -879,18 +879,26 @@
       const s = statusFor(t, env);
       li.className = "step-item test-item" + (t.id === state.activeTestId ? " active" : "");
       li.dataset.testId = t.id;
+      // Per-env run breakdown: small chip for every env with at least one run.
+      const perEnv = plan.environments.map((envName) => ({
+        env: envName,
+        count: (t.runs || []).filter((r) => r.environment === envName).length,
+        status: statusFor(t, envName),
+      }));
+      const chipsHtml = perEnv.filter((c) => c.count > 0).map((c) =>
+        `<span class="env-mini status-${c.status}" title="${escapeHtml(c.env)}: ${escapeHtml(STATUS_LABELS[c.status])} (${c.count} run${c.count === 1 ? "" : "s"})">${escapeHtml(c.env)}<span class="env-mini-count">${c.count}</span></span>`
+      ).join("");
+      const tooltip = perEnv.map((c) =>
+        `${c.env}: ${STATUS_LABELS[c.status]} (${c.count})`).join("\n");
       li.innerHTML = `
         <span class="row-grip" title="Drag to reorder">&#10495;</span>
         <span class="status-dot status-${s}" title="${STATUS_LABELS[s]} on ${escapeHtml(env)}"></span>
         <span class="test-num-tag"></span>
         <span class="step-name"></span>
-        <span class="test-attempts" title="Total attempts across all environments"></span>
+        <span class="env-chips" title="${escapeHtml(tooltip)}">${chipsHtml}</span>
       `;
       li.querySelector(".test-num-tag").textContent = t.number || "—";
       li.querySelector(".step-name").textContent = t.name || "Untitled test";
-      const attempts = (t.runs || []).length;
-      li.querySelector(".test-attempts").textContent =
-        attempts > 0 ? `&times;${attempts}`.replace("&times;", "×") : "";
       li.addEventListener("click", (e) => {
         if (e.target.closest(".row-grip")) return;
         state.activeTestId = t.id;
@@ -2719,6 +2727,70 @@ ${sections.join("")}
     openModal("tpl-label-prompt");
   }
 
+  // Top-of-modal summary: rolls up active defects by status and priority,
+  // and surfaces recurring failures (tests with 2+ runs in this env), so the
+  // tester can see at a glance what to attack first.
+  function buildDefectSummary(plan, env, defects) {
+    const counts = {
+      Fail: defects.filter(({ run }) => run.status === "Fail").length,
+      Blocked: defects.filter(({ run }) => run.status === "Blocked").length,
+    };
+    const byPriority = {};
+    defects.forEach(({ test }) => {
+      const p = (test.priority || "—").trim() || "—";
+      byPriority[p] = (byPriority[p] || 0) + 1;
+    });
+    const recurring = defects.filter(({ test }) =>
+      (test.runs || []).filter((r) => r.environment === env).length >= 2);
+
+    const card = document.createElement("div");
+    card.className = "defect-summary";
+    const priorityHtml = Object.entries(byPriority)
+      .sort((a, b) => b[1] - a[1])
+      .map(([p, n]) => `<span class="summary-pill">${escapeHtml(p)}: ${n}</span>`)
+      .join("");
+    card.innerHTML = `
+      <div class="summary-row summary-counts">
+        <span class="summary-headline">${defects.length} active defect${defects.length === 1 ? "" : "s"} on ${escapeHtml(env)}</span>
+        <span class="status-pill status-Fail">${counts.Fail} Failed</span>
+        <span class="status-pill status-Blocked">${counts.Blocked} Blocked</span>
+      </div>
+      <div class="summary-row">
+        <span class="summary-label">By priority</span>
+        <span class="summary-pills">${priorityHtml || '<span class="muted-count">No priorities set</span>'}</span>
+      </div>
+      <div class="summary-row" id="summary-recurring"></div>
+    `;
+    const rec = card.querySelector("#summary-recurring");
+    if (recurring.length === 0) {
+      rec.innerHTML = `<span class="summary-label">Recurring</span><span class="muted-count">None — every defect is on its first run for ${escapeHtml(env)}.</span>`;
+    } else {
+      const label = document.createElement("span");
+      label.className = "summary-label";
+      label.textContent = "Recurring";
+      const links = document.createElement("span");
+      links.className = "summary-pills";
+      recurring.forEach(({ test }) => {
+        const runs = (test.runs || []).filter((r) => r.environment === env).length;
+        const btn = document.createElement("button");
+        btn.className = "summary-link";
+        btn.title = `Jump to ${test.number || test.name}`;
+        btn.textContent = `${test.number || "—"} ×${runs}`;
+        btn.addEventListener("click", () => {
+          state.activeTestId = test.id;
+          state.activeRunId = latestRunForEnv(test, env)?.id || null;
+          closeModal();
+          renderTestList(plan);
+          renderActiveTest(plan);
+        });
+        links.appendChild(btn);
+      });
+      rec.appendChild(label);
+      rec.appendChild(links);
+    }
+    return card;
+  }
+
   // Defects window: every test whose latest run on the active environment
   // is Fail or Blocked. Each row links straight to the test in the editor.
   function openDefectsModal() {
@@ -2741,6 +2813,7 @@ ${sections.join("")}
         body.appendChild(ok);
         return;
       }
+      body.appendChild(buildDefectSummary(plan, env, defects));
       defects.forEach(({ test, run }) => {
         const row = document.createElement("button");
         row.className = "defect-row";
